@@ -12,10 +12,10 @@
 //! process's temporary directory and are removed with the service. Each call
 //! runs once: a refused or failed call returns its own error, nothing is sent
 //! again.
-use crate::job::{failed, refused, Outcome};
+use crate::job::{Outcome, failed, refused};
 use crate::registry::lock;
 use layerfs_bridge::control::{SdkCall, SdkRefusal, SdkValue};
-use layerfs_store_service::{telemetry, OpenRefusal, StoreService};
+use layerfs_store_service::{OpenRefusal, StoreService, telemetry};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -45,7 +45,61 @@ fn path(args: &SdkValue) -> Result<PathBuf, SdkRefusal> {
 
 /// Opens the Store at `store` for this process, or refuses.
 fn open(store: &Path, args: &SdkValue) -> Result<Opened, SdkRefusal> {
-    let project = crate::discovery::project(args)?;
+    #[allow(unused_mut)]
+    let mut project = crate::discovery::project(args)?;
+    #[cfg(target_os = "macos")]
+    let mut installed_here = None;
+    #[cfg(target_os = "macos")]
+    if project.installed.is_none() && !store.exists() {
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        let check_target = match store.parent() {
+            Some(parent)
+                if !parent.exists()
+                    && parent.file_name() == Some(std::ffi::OsStr::new("global"))
+                    && parent.parent().is_some_and(|vol| vol.exists()) =>
+            {
+                parent
+            }
+            _ => store,
+        };
+        layerfs_store_service::kernel_guard::check(check_target)
+            .map_err(|reason| refused("Unsupported", reason.0))?;
+        let project_dir = crate::discovery::project_dir(args)?;
+        let guard = crate::discovery::guard(&project_dir)?;
+        project = crate::discovery::project(args)?;
+        if project.installed.is_none() && !store.exists() {
+            if let Some(parent) = store.parent() {
+                std::fs::DirBuilder::new()
+                    .recursive(true)
+                    .mode(0o700)
+                    .create(parent)
+                    .map_err(failed)?;
+            }
+            let temp = store.with_extension(format!(
+                "tmp-{}-{}",
+                std::process::id(),
+                DIRECTORIES.fetch_add(1, Ordering::Relaxed)
+            ));
+            let mut src = std::fs::File::open(&project.store.path).map_err(failed)?;
+            let mut dst = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&temp)
+                .map_err(failed)?;
+            if let Err(err) = std::io::copy(&mut src, &mut dst) {
+                drop(dst);
+                let _ = std::fs::remove_file(&temp);
+                return Err(failed(err));
+            }
+            drop(dst);
+            if let Err(err) = std::fs::rename(&temp, store) {
+                let _ = std::fs::remove_file(&temp);
+                return Err(failed(err));
+            }
+            installed_here = Some((project_dir, guard));
+        }
+    }
     let directory = std::env::temp_dir().join(format!(
         "layerfs-store-{}-{}",
         std::process::id(),
@@ -59,11 +113,21 @@ fn open(store: &Path, args: &SdkValue) -> Result<Opened, SdkRefusal> {
         &directory.join("overlay.sqlite"),
     );
     match opened {
-        Ok(service) => Ok(Opened {
-            service: Arc::new(service),
-            clients: 0,
-            directory,
-        }),
+        Ok(service) => {
+            #[cfg(target_os = "macos")]
+            if let Some((project_dir, _guard)) = installed_here.take() {
+                project.manifest.locator = store.to_string_lossy().into_owned();
+                let mut installed = project.manifest.clone();
+                installed.daemon_sqlite = Some(project.manifest.host_sqlite.clone());
+                project.installed = Some(installed);
+                crate::discovery::save_project(&project_dir, &project)?;
+            }
+            Ok(Opened {
+                service: Arc::new(service),
+                clients: 0,
+                directory,
+            })
+        }
         Err(refusal) => {
             let _ = std::fs::remove_dir_all(&directory);
             Err(match refusal {

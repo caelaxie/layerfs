@@ -1,10 +1,15 @@
 //! Ordinary Sandbox startup, original deployment inputs and failure custody.
-use crate::{internal::Control, OperationFailure};
+use crate::{OperationFailure, internal::Control};
 use layerfs_bridge::{
     control::{ControlError, DaemonPhase, DaemonStatus, HelloRequest, Reply, Request},
     daemon_setup::DaemonSetup,
-    duplex::{initiate_observed, public_key, ChannelError, ChannelWork},
+    duplex::{ChannelError, ChannelWork, initiate_observed, public_key},
 };
+#[cfg(target_os = "macos")]
+use layerfs_sandbox::backend::darwin::{
+    Docker, ListenerFailure, Sandbox, SandboxCreateFailure, SandboxRequest, UploadFailure,
+};
+#[cfg(not(target_os = "macos"))]
 use layerfs_sandbox::backend::docker::{
     Docker, ListenerFailure, Sandbox, SandboxCreateFailure, SandboxRequest, UploadFailure,
 };
@@ -312,10 +317,21 @@ pub(crate) fn create(
     let mut observed = None;
     let result = (|| {
         let config = request.setup.encode().map_err(SandboxCause::Setup)?;
-        if request.setup.listen != format!("0.0.0.0:{}", request.deployment.port)
-            || request.setup.store != "/layerfs-store/global/store.sqlite"
-            || request.setup.overlay != "/layerfs-local/overlay/overlay.sqlite"
-            || request.setup.mounts != "/workspaces"
+        #[cfg(target_os = "macos")]
+        let valid_paths = std::path::Path::new(&request.setup.store).is_absolute()
+            && std::path::Path::new(&request.setup.overlay).is_absolute()
+            && std::path::Path::new(&request.setup.mounts).is_absolute();
+        #[cfg(not(target_os = "macos"))]
+        let valid_paths = request.setup.store == "/layerfs-store/global/store.sqlite"
+            && request.setup.overlay == "/layerfs-local/overlay/overlay.sqlite"
+            && request.setup.mounts == "/workspaces";
+        #[cfg(target_os = "macos")]
+        let valid_listen = request.setup.listen == format!("0.0.0.0:{}", request.deployment.port)
+            || request.setup.listen == "127.0.0.1:0";
+        #[cfg(not(target_os = "macos"))]
+        let valid_listen = request.setup.listen == format!("0.0.0.0:{}", request.deployment.port);
+        if !valid_listen
+            || !valid_paths
             || request.startup_wait.is_zero()
             || public_key(&request.controller_private).map_err(SandboxCause::Channel)?
                 != request.setup.control_peer

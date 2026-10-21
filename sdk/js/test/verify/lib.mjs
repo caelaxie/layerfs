@@ -2,7 +2,7 @@
 // Each case runs as its own command: a fresh volume, a fresh Init of the
 // fixture, its own Sandboxes, and teardown of all of them. Nothing is retried.
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,7 +16,7 @@ const RECEIPTS = join(REPO, "core/target/issue327/verify");
 
 /** The node runtime image built on the pinned image (#323), by digest. */
 export const IMAGE = process.env.LAYERFS_IMAGE ?? "sha256:2d929c6d66c21c962febba8ede6ddb6405faefa057d3b4d21750de07fe81918b";
-export const DAEMON = process.env.LAYERFS_DAEMON ?? join(REPO, "core/target/issue327/layerfs-daemon");
+export const DAEMON = process.env.LAYERFS_DAEMON ?? (process.platform === "darwin" ? (existsSync(join(REPO, "core/target/release/layerfs-daemon")) ? join(REPO, "core/target/release/layerfs-daemon") : join(REPO, "core/target/debug/layerfs-daemon")) : join(REPO, "core/target/issue327/layerfs-daemon"));
 
 function dockerSocket() {
   const host = execFileSync("docker", ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"], { encoding: "utf8" }).trim();
@@ -26,17 +26,27 @@ function dockerSocket() {
 
 export async function setup(id, { project = "website" } = {}) {
   const stamp = `${id.toLowerCase()}-${Date.now().toString(36)}`;
-  const volume = `layerfs-327-${stamp}`;
-  execFileSync("docker", ["volume", "create", volume], { stdio: "ignore" });
   const work = mkdtempSync(join(tmpdir(), "layerfs-327-"));
+  const volume = process.platform === "darwin" ? join(work, "volume") : `layerfs-327-${stamp}`;
+  if (process.platform === "darwin") {
+    mkdirSync(volume, { recursive: true, mode: 0o700 });
+  } else {
+    execFileSync("docker", ["volume", "create", volume], { stdio: "ignore" });
+  }
   const source = join(work, "website");
   cpSync(FIXTURE, source, { recursive: true });
   mkdirSync(join(source, ".git"));
   writeFileSync(join(source, ".git/HEAD"), "ref: refs/heads/main\n");
-  const deploy = { docker: dockerSocket(), image: IMAGE, volume, daemon: DAEMON };
+  const deploy = {
+    docker: process.platform === "darwin" ? join(work, "home", "_sandboxes") : dockerSocket(),
+    image: IMAGE,
+    volume,
+    daemon: DAEMON,
+  };
   Object.assign(process.env, {
     LAYERFS_HOME: join(work, "home"), LAYERFS_DOCKER: deploy.docker,
     LAYERFS_IMAGE: deploy.image, LAYERFS_VOLUME: deploy.volume, LAYERFS_DAEMON: deploy.daemon,
+    ...(process.platform === "darwin" ? { LAYERFS_STORE_PATH: join(volume, "global/store.sqlite") } : {}),
   });
   const layerfs = new LayerFS(project);
   return { id, stamp, volume, work, source, deploy, layerfs, operator: new LayerFSOperator(layerfs), mounts: [], checks: [], notes: [] };
@@ -106,12 +116,15 @@ export async function teardown(ctx) {
       containers.push(id);
     });
   }
-  for (const id of containers) {
-    // Our own test container: remove it so the volume can go.
-    let short = id;
-    try { short = containerOf(id); execFileSync("docker", ["rm", "-f", short], { stdio: "ignore" }); } catch (e) { problems.push(`docker rm ${short}`); }
+  await ctx.layerfs.close().catch((e) => problems.push(`store close: ${e.message}`));
+  if (process.platform !== "darwin") {
+    for (const id of containers) {
+      // Our own test container: remove it so the volume can go.
+      let short = id;
+      try { short = containerOf(id); execFileSync("docker", ["rm", "-f", short], { stdio: "ignore" }); } catch (e) { problems.push(`docker rm ${short}`); }
+    }
+    try { execFileSync("docker", ["volume", "rm", ctx.volume], { stdio: "ignore" }); } catch (e) { problems.push(`volume rm ${ctx.volume}`); }
   }
-  try { execFileSync("docker", ["volume", "rm", ctx.volume], { stdio: "ignore" }); } catch (e) { problems.push(`volume rm ${ctx.volume}`); }
   rmSync(ctx.work, { recursive: true, force: true });
   return problems;
 }

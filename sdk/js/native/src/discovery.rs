@@ -3,16 +3,17 @@ use crate::{
     job::{failed, refused},
     registry::{self, Mount, Process, Project, SandboxState},
 };
-use layerfs_api::{internal::workspace, BoundWorkspace, MountedWorkspace};
+use layerfs_api::{BoundWorkspace, MountedWorkspace, internal::workspace};
 use layerfs_bridge::{
     control::{Reply, SdkRefusal, SdkValue},
     provision::StoreManifest,
 };
 use layerfs_persistence::{SealedStore, SqlitePersistenceProfile};
-use layerfs_sandbox::{
-    backend::docker::{Docker, Sandbox, SandboxRequest},
-    CommandIdentity, ContainerId,
-};
+#[cfg(target_os = "macos")]
+use layerfs_sandbox::backend::darwin::{Docker, Sandbox, SandboxRequest};
+#[cfg(not(target_os = "macos"))]
+use layerfs_sandbox::backend::docker::{Docker, Sandbox, SandboxRequest};
+use layerfs_sandbox::{CommandIdentity, ContainerId};
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
@@ -26,7 +27,14 @@ use std::{
 };
 extern "C" {
     fn geteuid() -> u32;
+    fn getegid() -> u32;
     fn flock(fd: i32, operation: i32) -> i32;
+}
+pub(crate) fn current_uid() -> u32 {
+    unsafe { geteuid() }
+}
+pub(crate) fn current_gid() -> u32 {
+    unsafe { getegid() }
 }
 const LOCK_EX: i32 = 2;
 const LOCK_NB: i32 = 4;
@@ -112,7 +120,7 @@ pub(crate) fn claim(args: &SdkValue, name: &str) -> Result<PathBuf> {
     match fs::DirBuilder::new().mode(0o700).create(&path) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            return Err(refused("Exists", format!("a Sandbox named {name} exists")))
+            return Err(refused("Exists", format!("a Sandbox named {name} exists")));
         }
         Err(e) => return Err(failed(e)),
     }
@@ -333,6 +341,15 @@ pub(crate) fn save_sandbox(
     let deploy = args
         .get("deploy")
         .ok_or_else(|| refused("InvalidInput", "deploy"))?;
+    let raw_docker = registry::text(deploy, "docker")?;
+    #[cfg(target_os = "macos")]
+    let docker_val = if raw_docker == "/var/run/docker.sock" {
+        home(args)?.join(SANDBOXES).to_string_lossy().into_owned()
+    } else {
+        raw_docker.to_owned()
+    };
+    #[cfg(not(target_os = "macos"))]
+    let docker_val = raw_docker.to_owned();
     save(
         &directory.join("sandbox.record"),
         SdkValue::map([
@@ -342,7 +359,7 @@ pub(crate) fn save_sandbox(
                 "container",
                 SdkValue::text(state.runtime.identity().to_string()),
             ),
-            ("docker", SdkValue::text(registry::text(deploy, "docker")?)),
+            ("docker", SdkValue::text(&docker_val)),
             ("image", SdkValue::text(&state.runtime.request().image)),
             (
                 "volume",
@@ -445,6 +462,12 @@ pub(crate) fn reopen(args: &SdkValue) -> Result<Arc<SandboxState>> {
         project: project.to_owned(),
         directory,
         runtime,
+        #[cfg(target_os = "macos")]
+        identity: CommandIdentity {
+            uid: current_uid(),
+            gid: current_gid(),
+        },
+        #[cfg(not(target_os = "macos"))]
         identity: CommandIdentity { uid: 501, gid: 20 },
         controls: crate::pool::Controls::new(control, dial),
         mounts: Default::default(),
@@ -579,7 +602,7 @@ pub(crate) fn save_process(state: &SandboxState, id: &str, p: &Process) -> Resul
     )
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::os::{
@@ -588,19 +611,24 @@ mod tests {
     };
     use std::process::{Command, Stdio};
     extern "C" {
-        fn pipe2(fds: *mut i32, flags: i32) -> i32;
+        fn pipe(fds: *mut i32) -> i32;
+        fn fcntl(fd: i32, cmd: i32, arg: i32) -> i32;
         fn getpid() -> i32;
         fn poll(fds: *mut [i32; 2], count: u64, timeout: i32) -> i32;
         fn read(fd: i32, buffer: *mut u8, count: usize) -> isize;
         fn write(fd: i32, buffer: *const u8, count: usize) -> isize;
         fn close(fd: i32) -> i32;
     }
-    const CLOEXEC: i32 = 0o2000000;
+    const F_SETFD: i32 = 2;
+    const F_GETFL: i32 = 3;
+    const FD_CLOEXEC: i32 = 1;
     const POLLIN: i32 = 1;
 
-    fn pipe() -> (OwnedFd, OwnedFd) {
+    fn make_pipe() -> (OwnedFd, OwnedFd) {
         let mut ends = [0 as RawFd; 2];
-        assert_eq!(unsafe { pipe2(ends.as_mut_ptr(), CLOEXEC) }, 0);
+        assert_eq!(unsafe { pipe(ends.as_mut_ptr()) }, 0);
+        assert_eq!(unsafe { fcntl(ends[0], F_SETFD, FD_CLOEXEC) }, 0);
+        assert_eq!(unsafe { fcntl(ends[1], F_SETFD, FD_CLOEXEC) }, 0);
         unsafe { (OwnedFd::from_raw_fd(ends[0]), OwnedFd::from_raw_fd(ends[1])) }
     }
 
@@ -613,14 +641,15 @@ mod tests {
         let _ = fs::remove_dir_all(&directory);
         fs::create_dir(&directory).unwrap();
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
-        let (signal_read, signal_write) = pipe();
-        let (release_read, release_write) = pipe();
+        let (signal_read, signal_write) = make_pipe();
+        let (release_read, release_write) = make_pipe();
         let (signal, release, release_copy) = (
             signal_write.as_raw_fd(),
             release_read.as_raw_fd(),
             release_write.as_raw_fd(),
         );
         let held = guard(&directory).unwrap();
+        let lock_fd = held.file.as_raw_fd();
         // Another thread of the host starts a process meanwhile; its child
         // waits between fork and exec with the copied descriptor table.
         let spawner = std::thread::spawn(move || {
@@ -629,6 +658,9 @@ mod tests {
             unsafe {
                 command.pre_exec(move || {
                     close(release_copy);
+                    if fcntl(lock_fd, F_GETFL, 0) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
                     let pid = getpid().to_ne_bytes();
                     write(signal, pid.as_ptr(), 4);
                     let mut byte = 0u8;
@@ -646,13 +678,16 @@ mod tests {
             unsafe { read(signal_read.as_raw_fd(), pid.as_mut_ptr(), 4) },
             4
         );
-        let child = i32::from_ne_bytes(pid);
-        let lock = directory.join("ownership.lock");
-        let copied = fs::read_dir(format!("/proc/{child}/fd"))
-            .unwrap()
-            .filter_map(|entry| fs::read_link(entry.ok()?.path()).ok())
-            .any(|target| target == lock);
-        assert!(copied, "child {child} holds no copy of {}", lock.display());
+        let _child = i32::from_ne_bytes(pid);
+        #[cfg(target_os = "linux")]
+        {
+            let lock = directory.join("ownership.lock");
+            let copied = fs::read_dir(format!("/proc/{_child}/fd"))
+                .unwrap()
+                .filter_map(|entry| fs::read_link(entry.ok()?.path()).ok())
+                .any(|target| target == lock);
+            assert!(copied, "child {_child} holds no copy of {}", lock.display());
+        }
 
         drop(held);
         // A second open of ownership.lock, as another process would take it.

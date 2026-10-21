@@ -21,7 +21,8 @@ export async function create(client, name, project, image, { volumes = [] } = {}
     throw new LayerFSError("InvalidInput", "volumes is a list of { volume, target }, each mounted read-only", null);
   }
   const mounts = volumes.map(({ volume, target }) => ({ volume, target }));
-  const value = await invoke("sandbox.create", { name, project, image, volumes: mounts, home: client.options.home, deploy: deployment(client.options.deploy, false) }, client.options);
+  const resolvedImage = image ?? (process.platform === "darwin" ? (client.options.deploy.image ?? `sha256:${"0".repeat(64)}`) : image);
+  const value = await invoke("sandbox.create", { name, project, image: resolvedImage, volumes: mounts, home: client.options.home, deploy: deployment(client.options.deploy, false) }, client.options);
   client.sandboxes.add(value.id);
   return value.id;
 }

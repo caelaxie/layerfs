@@ -1,9 +1,12 @@
 //! Bounded original Engine/control peers qualify SDK close custody and ordinary exec routing.
 #![cfg(unix)]
+#[cfg(not(target_os = "macos"))]
 #[allow(dead_code)]
+#[rustfmt::skip]
 #[path = "../../layerfs-sandbox/tests/support/engine.rs"]
 mod engine;
-use engine::{fixed, frame, Peer};
+#[cfg(not(target_os = "macos"))]
+use engine::{Peer, fixed, frame};
 use layerfs_api::{
     ManagedSandbox, SandboxApi, SandboxCause, SandboxCreate, SandboxPhase, WorkspaceApi,
 };
@@ -12,6 +15,10 @@ use layerfs_bridge::{
     daemon_setup::{DaemonLimits, DaemonSetup},
     duplex,
 };
+#[cfg(target_os = "macos")]
+use layerfs_sandbox::backend::darwin::{Docker, SandboxRequest};
+#[cfg(not(target_os = "macos"))]
+use layerfs_sandbox::backend::docker::SandboxRequest;
 use std::{
     fs,
     net::TcpListener,
@@ -20,10 +27,13 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
+#[cfg(not(target_os = "macos"))]
 const CID: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const IMAGE: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 static NEXT: AtomicUsize = AtomicUsize::new(0);
+#[cfg(not(target_os = "macos"))]
 const SECCOMP: &str = r#"seccomp={\"defaultAction\":\"SCMP_ACT_ALLOW\",\"syscalls\":[{\"names\":[\"unshare\",\"clone\"],\"action\":\"SCMP_ACT_ERRNO\",\"errnoRet\":1,\"args\":[{\"index\":0,\"value\":268435456,\"valueTwo\":268435456,\"op\":\"SCMP_CMP_MASKED_EQ\"}]},{\"names\":[\"clone3\"],\"action\":\"SCMP_ACT_ERRNO\",\"errnoRet\":38}]}"#;
+#[cfg(not(target_os = "macos"))]
 fn endpoint(port: u16) -> Vec<u8> {
     fixed(200,format!(r#"{{"Id":"{CID}","Image":"{IMAGE}","State":{{"Running":true,"Paused":false,"Restarting":false,"Dead":false}},"Config":{{"User":"0:0","Tty":false,"Entrypoint":["/usr/local/bin/layerfs-daemon"],"Cmd":["--config","/layerfs-local/config/daemon.setup"]}},"HostConfig":{{"Init":true,"Privileged":false,"CapAdd":["CAP_SYS_ADMIN"],"Devices":[{{"PathOnHost":"/dev/fuse","PathInContainer":"/dev/fuse","CgroupPermissions":"rwm"}}],"SecurityOpt":["no-new-privileges=true","apparmor=unconfined","{SECCOMP}"],"RestartPolicy":{{"Name":"no"}},"LogConfig":{{"Type":"json-file"}}}},"Mounts":[{{"Type":"volume","Name":"lfs-test-borrowed","Destination":"/layerfs-store","RW":true,"Driver":"local"}}],"NetworkSettings":{{"Ports":{{"30421/tcp":[{{"HostIp":"127.0.0.1","HostPort":"{port}"}}]}}}}}}"#).as_bytes())
 }
@@ -49,6 +59,58 @@ fn setup(private: [u8; 32], peer: [u8; 32]) -> DaemonSetup {
     }
 }
 
+fn spawn_daemon(listener: TcpListener, existing: bool) -> JoinHandle<()> {
+    listener.set_nonblocking(true).unwrap();
+    thread::spawn(move || {
+        let until = Instant::now() + Duration::from_secs(3);
+        let socket = loop {
+            match listener.accept() {
+                Ok((socket, _)) => break socket,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < until =>
+                {
+                    thread::sleep(Duration::from_millis(2))
+                }
+                Err(error) => panic!("bounded original Hello accept: {error}"),
+            }
+        };
+        socket.set_nonblocking(false).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        socket
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut channel =
+            duplex::accept(socket, &[32; 32], duplex::public_key(&[31; 32]).unwrap()).unwrap();
+        let call = Call::decode(channel.receive.receive().unwrap()).unwrap();
+        assert!(
+            matches!(call.request, Request::Hello(request) if request.wait_for_store == existing && request.expected_instance.is_none())
+        );
+        channel
+            .send
+            .send(
+                &Answer {
+                    id: call.id,
+                    reply: Reply::Hello(DaemonStatus {
+                        instance: [9; 32],
+                        phase: if existing {
+                            DaemonPhase::ControlReady
+                        } else {
+                            DaemonPhase::InstallPending
+                        },
+                        overlay_sqlite: Some("3.51.0".into()),
+                        store_sqlite: existing.then(|| "3.51.0".into()),
+                    }),
+                }
+                .encode()
+                .unwrap(),
+            )
+            .unwrap();
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
 struct Fixture {
     api: SandboxApi,
     owner: Option<ManagedSandbox>,
@@ -56,6 +118,7 @@ struct Fixture {
     daemon: Option<JoinHandle<()>>,
     binary: PathBuf,
 }
+#[cfg(not(target_os = "macos"))]
 impl Fixture {
     fn new(tail: Vec<Vec<u8>>) -> Self {
         Self::new_for(None, tail)
@@ -64,55 +127,7 @@ impl Fixture {
         let existing = project.is_some();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        listener.set_nonblocking(true).unwrap();
-        let daemon = thread::spawn(move || {
-            let until = Instant::now() + Duration::from_secs(3);
-            let socket = loop {
-                match listener.accept() {
-                    Ok((socket, _)) => break socket,
-                    Err(error)
-                        if error.kind() == std::io::ErrorKind::WouldBlock
-                            && Instant::now() < until =>
-                    {
-                        thread::sleep(Duration::from_millis(2))
-                    }
-                    Err(error) => panic!("bounded original Hello accept: {error}"),
-                }
-            };
-            socket.set_nonblocking(false).unwrap();
-            socket
-                .set_read_timeout(Some(Duration::from_secs(2)))
-                .unwrap();
-            socket
-                .set_write_timeout(Some(Duration::from_secs(2)))
-                .unwrap();
-            let mut channel =
-                duplex::accept(socket, &[32; 32], duplex::public_key(&[31; 32]).unwrap()).unwrap();
-            let call = Call::decode(channel.receive.receive().unwrap()).unwrap();
-            assert!(
-                matches!(call.request, Request::Hello(request) if request.wait_for_store == existing && request.expected_instance.is_none())
-            );
-            channel
-                .send
-                .send(
-                    &Answer {
-                        id: call.id,
-                        reply: Reply::Hello(DaemonStatus {
-                            instance: [9; 32],
-                            phase: if existing {
-                                DaemonPhase::ControlReady
-                            } else {
-                                DaemonPhase::InstallPending
-                            },
-                            overlay_sqlite: Some("3.51.0".into()),
-                            store_sqlite: existing.then(|| "3.51.0".into()),
-                        }),
-                    }
-                    .encode()
-                    .unwrap(),
-                )
-                .unwrap();
-        });
+        let daemon = spawn_daemon(listener, existing);
         let marker = frame(1, b"LAYERFS_DAEMON_LISTEN 0.0.0.0:30421\n");
         let mut logs = format!("HTTP/1.1 200 OK\r\nContent-Type: application/vnd.docker.multiplexed-stream\r\nContent-Length: {}\r\n\r\n",marker.len()).into_bytes();
         logs.extend(marker);
@@ -137,7 +152,7 @@ impl Fixture {
             deployment_setup.existing_store = Some(manifest);
         }
         let request = SandboxCreate {
-            deployment: layerfs_sandbox::backend::docker::SandboxRequest {
+            deployment: SandboxRequest {
                 image: IMAGE.into(),
                 store_volume: "lfs-test-borrowed".into(),
                 port: 30421,
@@ -171,6 +186,7 @@ impl Fixture {
         calls
     }
 }
+#[cfg(not(target_os = "macos"))]
 impl Drop for Fixture {
     fn drop(&mut self) {
         if let Some(daemon) = self.daemon.take() {
@@ -179,29 +195,186 @@ impl Drop for Fixture {
         let _ = fs::remove_file(&self.binary);
     }
 }
+
+#[cfg(target_os = "macos")]
+fn mock_daemon_binary() -> &'static PathBuf {
+    use std::sync::OnceLock;
+    static BIN: OnceLock<PathBuf> = OnceLock::new();
+    BIN.get_or_init(|| {
+        let dir =
+            std::env::temp_dir().join(format!("sdk-darwin-mock-daemon-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("mock_daemon.rs");
+        let bin = dir.join("layerfs-daemon");
+        let code = r#"
+use std::{fs, io::Write, thread, time::Duration};
+fn main() {
+    let text = fs::read_to_string("sandbox.state").unwrap();
+    let port = text.lines().find_map(|l| l.strip_prefix("port=")).unwrap();
+    println!("LAYERFS_DAEMON_LISTEN 127.0.0.1:{port}");
+    let _ = std::io::stdout().flush();
+    thread::sleep(Duration::from_secs(30));
+}
+"#;
+        fs::write(&src, code).unwrap();
+        let status = std::process::Command::new("rustc")
+            .arg(&src)
+            .arg("-O")
+            .arg("-o")
+            .arg(&bin)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        bin
+    })
+}
+
+#[cfg(target_os = "macos")]
+struct Fixture {
+    api: SandboxApi,
+    owner: Option<ManagedSandbox>,
+    daemon: Option<JoinHandle<()>>,
+    root_dir: PathBuf,
+    cid: String,
+    daemon_pid: Option<i32>,
+}
+#[cfg(target_os = "macos")]
+impl Fixture {
+    fn new(_tail: Vec<Vec<u8>>) -> Self {
+        Self::new_for(None, Vec::new())
+    }
+    fn new_for(project: Option<&layerfs_api::SealedProject>, _tail: Vec<Vec<u8>>) -> Self {
+        let existing = project.is_some();
+        let binary = mock_daemon_binary().clone();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let daemon = spawn_daemon(listener, existing);
+        let seq = NEXT.fetch_add(1, Ordering::Relaxed);
+        let root_dir =
+            std::env::temp_dir().join(format!("sdk-darwin-ops-{}-{}", std::process::id(), seq));
+        let docker = Docker::new(&root_dir, Duration::from_secs(2)).unwrap();
+        let api = SandboxApi::new(docker);
+        let mut deployment_setup = setup([32; 32], duplex::public_key(&[31; 32]).unwrap());
+        deployment_setup.listen = format!("0.0.0.0:{port}");
+        if let Some(project) = project {
+            let mut manifest = project.manifest.clone();
+            manifest.daemon_sqlite = Some("3.51.0".into());
+            deployment_setup.existing_store = Some(manifest);
+        }
+        let request = SandboxCreate {
+            deployment: SandboxRequest {
+                image: IMAGE.into(),
+                store_volume: "lfs-test-borrowed".into(),
+                port,
+                volumes: vec![],
+            },
+            setup: deployment_setup,
+            executable: binary,
+            controller_private: [31; 32],
+            daemon_peer: duplex::public_key(&[32; 32]).unwrap(),
+            startup_wait: Duration::from_secs(2),
+            connect_host: None,
+        };
+        let owner = match project {
+            Some(project) => api.create(request, project).unwrap(),
+            None => layerfs_api::internal::start(&api, request).unwrap(),
+        };
+        let cid = owner.runtime.identity().to_string();
+        let state_text =
+            fs::read_to_string(root_dir.join(&cid).join("runtime/sandbox.state")).unwrap();
+        let daemon_pid = state_text
+            .lines()
+            .find_map(|line| line.strip_prefix("daemon_pid="))
+            .and_then(|v| v.parse::<i32>().ok());
+        Self {
+            api,
+            owner: Some(owner),
+            daemon: Some(daemon),
+            root_dir,
+            cid,
+            daemon_pid,
+        }
+    }
+    fn runtime_dir(&self) -> PathBuf {
+        self.root_dir.join(&self.cid).join("runtime")
+    }
+}
+#[cfg(target_os = "macos")]
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        if let Some(daemon) = self.daemon.take() {
+            let _ = daemon.join();
+        }
+        if let Some(pid) = self.daemon_pid.take() {
+            let _ = std::process::Command::new("/bin/kill")
+                .args(["-9", &pid.to_string()])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+        let locked = self.runtime_dir().join("execs/locked");
+        if locked.exists() {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&locked, fs::Permissions::from_mode(0o700));
+        }
+        let execs = self.runtime_dir().join("execs");
+        if execs.exists() {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&execs, fs::Permissions::from_mode(0o700));
+        }
+        let _ = fs::remove_dir_all(&self.root_dir);
+    }
+}
 #[test]
 fn close_stops_then_deletes_the_original_owner_without_deleting_its_borrowed_volume() {
-    let mut fixture = Fixture::new(vec![fixed(204, b""), fixed(204, b"")]);
-    fixture.api.close(fixture.owner.take().unwrap()).unwrap();
-    let calls = fixture.calls();
-    assert_eq!(calls.len(), 8);
-    assert!(calls[6].starts_with(format!("POST /v1.54/containers/{CID}/stop?t=1 ").as_bytes()));
-    assert!(calls[7]
-        .starts_with(format!("DELETE /v1.54/containers/{CID}?force=false&v=false ").as_bytes()));
-    assert!(!calls
-        .iter()
-        .any(|call| call.starts_with(b"DELETE /v1.54/volumes/")));
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mut fixture = Fixture::new(vec![fixed(204, b""), fixed(204, b"")]);
+        fixture.api.close(fixture.owner.take().unwrap()).unwrap();
+        let calls = fixture.calls();
+        assert_eq!(calls.len(), 8);
+        assert!(calls[6].starts_with(format!("POST /v1.54/containers/{CID}/stop?t=1 ").as_bytes()));
+        assert!(calls[7].starts_with(
+            format!("DELETE /v1.54/containers/{CID}?force=false&v=false ").as_bytes()
+        ));
+        assert!(
+            !calls
+                .iter()
+                .any(|call| call.starts_with(b"DELETE /v1.54/volumes/"))
+        );
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut fixture = Fixture::new(vec![]);
+        let cid = fixture.cid.clone();
+        fixture.api.close(fixture.owner.take().unwrap()).unwrap();
+        assert!(!fixture.root_dir.join(&cid).exists());
+        assert!(
+            fixture
+                .root_dir
+                .join("_volumes/lfs-test-borrowed/global")
+                .exists()
+        );
+    }
 }
 #[test]
 fn failed_stop_preserves_original_owner_channel_inputs_and_attempt_without_delete() {
+    #[cfg(not(target_os = "macos"))]
     let mut fixture = Fixture::new(vec![fixed(409, b"original stop refusal")]);
+    #[cfg(target_os = "macos")]
+    let mut fixture = {
+        let f = Fixture::new(vec![]);
+        fs::remove_file(f.runtime_dir().join("sandbox.state")).unwrap();
+        f
+    };
     let mut owner = fixture.owner.take().unwrap();
+    let expected_cid = owner.runtime.identity().to_string();
     let work = layerfs_api::internal::control(&mut owner).channel_work();
     let handshake = owner.handshake;
     let failure = fixture.api.close(owner).unwrap_err();
     assert_eq!(failure.phase, SandboxPhase::Stop);
     let runtime = failure.sandbox.as_ref().unwrap();
-    assert_eq!(runtime.identity().to_string(), CID);
+    assert_eq!(runtime.identity().to_string(), expected_cid);
     assert!(!runtime.disposition().stopped);
     assert!(!runtime.disposition().deleted);
     let SandboxCause::Runtime(cause) = &failure.cause else {
@@ -213,21 +386,32 @@ fn failed_stop_preserves_original_owner_channel_inputs_and_attempt_without_delet
     assert_eq!(failure.handshake, handshake);
     assert_eq!(failure.request.controller_private, [31; 32]);
     assert!(failure.installed.is_none());
+    #[cfg(not(target_os = "macos"))]
     assert_eq!(fixture.calls().len(), 7);
 }
 #[test]
 fn failed_delete_retains_acknowledged_stop_and_exact_delete_failure() {
+    #[cfg(not(target_os = "macos"))]
     let mut fixture = Fixture::new(vec![
         fixed(204, b""),
         fixed(409, b"original delete refusal"),
     ]);
-    let failure = fixture
-        .api
-        .close(fixture.owner.take().unwrap())
-        .unwrap_err();
+    #[cfg(target_os = "macos")]
+    let mut fixture = {
+        use std::os::unix::fs::PermissionsExt;
+        let f = Fixture::new(vec![]);
+        let locked = f.runtime_dir().join("execs/locked");
+        fs::create_dir(&locked).unwrap();
+        fs::write(locked.join("child"), b"x").unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o500)).unwrap();
+        f
+    };
+    let owner = fixture.owner.take().unwrap();
+    let expected_cid = owner.runtime.identity().to_string();
+    let failure = fixture.api.close(owner).unwrap_err();
     assert_eq!(failure.phase, SandboxPhase::Delete);
     let runtime = failure.sandbox.as_ref().unwrap();
-    assert_eq!(runtime.identity().to_string(), CID);
+    assert_eq!(runtime.identity().to_string(), expected_cid);
     assert!(runtime.disposition().stopped);
     assert!(!runtime.disposition().deleted);
     let SandboxCause::Runtime(cause) = &failure.cause else {
@@ -236,6 +420,7 @@ fn failed_delete_retains_acknowledged_stop_and_exact_delete_failure() {
     assert_eq!(cause.requested_container, Some(runtime.identity()));
     assert!(cause.attempted);
     assert!(failure.control.is_some());
+    #[cfg(not(target_os = "macos"))]
     assert_eq!(fixture.calls().len(), 8);
 }
 
@@ -295,12 +480,23 @@ fn mounted() -> layerfs_api::MountedWorkspace {
 }
 #[test]
 fn workspace_exec_returns_original_runtime_owner_at_the_mount_with_no_daemon_registration() {
+    #[cfg(not(target_os = "macos"))]
     const EID: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+    #[cfg(not(target_os = "macos"))]
     let mut fixture = Fixture::new(vec![
         fixed(201, format!("{{\"Id\":\"{EID}\"}}").as_bytes()),
         fixed(204, b""),
         fixed(204, b""),
     ]);
+    #[cfg(target_os = "macos")]
+    let mut fixture = Fixture::new(vec![]);
+    let expected_cid = fixture
+        .owner
+        .as_ref()
+        .unwrap()
+        .runtime
+        .identity()
+        .to_string();
     let before = layerfs_api::internal::control(fixture.owner.as_mut().unwrap()).channel_work();
     let created = WorkspaceApi::exec(
         fixture.owner.as_ref().unwrap(),
@@ -310,8 +506,11 @@ fn workspace_exec_returns_original_runtime_owner_at_the_mount_with_no_daemon_reg
         false,
     )
     .unwrap();
-    assert_eq!(created.identity().0.to_string(), CID);
+    assert_eq!(created.identity().0.to_string(), expected_cid);
+    #[cfg(not(target_os = "macos"))]
     assert_eq!(created.identity().1.to_string(), EID);
+    #[cfg(target_os = "macos")]
+    assert_eq!(created.identity().1.to_string().len(), 64);
     assert_eq!(created.request().directory, "/workspaces/selected-mount");
     assert_eq!(
         created.request().identity,
@@ -322,23 +521,47 @@ fn workspace_exec_returns_original_runtime_owner_at_the_mount_with_no_daemon_reg
         before
     );
     fixture.api.close(fixture.owner.take().unwrap()).unwrap();
-    let calls = fixture.calls();
-    assert_eq!(calls.len(), 9);
-    let request = std::str::from_utf8(&calls[6]).unwrap();
-    assert!(request.starts_with(&format!("POST /v1.54/containers/{CID}/exec ")));
-    assert!(request.contains(r#""WorkingDir":"/workspaces/selected-mount""#));
-    assert!(request.contains(r#""User":"501:20""#));
-    assert!(!calls
-        .iter()
-        .any(|call| call.windows(12).any(|bytes| bytes == b"/exec/start ")));
+    #[cfg(not(target_os = "macos"))]
+    {
+        let calls = fixture.calls();
+        assert_eq!(calls.len(), 9);
+        let request = std::str::from_utf8(&calls[6]).unwrap();
+        assert!(request.starts_with(&format!("POST /v1.54/containers/{CID}/exec ")));
+        assert!(request.contains(r#""WorkingDir":"/workspaces/selected-mount""#));
+        assert!(request.contains(r#""User":"501:20""#));
+        assert!(
+            !calls
+                .iter()
+                .any(|call| call.windows(12).any(|bytes| bytes == b"/exec/start "))
+        );
+    }
 }
 #[test]
 fn workspace_exec_failure_keeps_exact_original_request_and_container() {
+    #[cfg(not(target_os = "macos"))]
     let mut fixture = Fixture::new(vec![
         fixed(409, b"original exec refusal"),
         fixed(204, b""),
         fixed(204, b""),
     ]);
+    #[cfg(target_os = "macos")]
+    let mut fixture = {
+        use std::os::unix::fs::PermissionsExt;
+        let f = Fixture::new(vec![]);
+        fs::set_permissions(
+            f.runtime_dir().join("execs"),
+            fs::Permissions::from_mode(0o500),
+        )
+        .unwrap();
+        f
+    };
+    let expected_cid = fixture
+        .owner
+        .as_ref()
+        .unwrap()
+        .runtime
+        .identity()
+        .to_string();
     let failure = WorkspaceApi::exec(
         fixture.owner.as_ref().unwrap(),
         &mounted(),
@@ -347,12 +570,22 @@ fn workspace_exec_failure_keeps_exact_original_request_and_container() {
         true,
     )
     .unwrap_err();
-    assert_eq!(failure.container.to_string(), CID);
+    assert_eq!(failure.container.to_string(), expected_cid);
     assert_eq!(failure.request.directory, "/workspaces/selected-mount");
     assert_eq!(failure.request.arguments, ["/bin/pwd"]);
     assert!(failure.request.stdin);
     assert!(failure.transfer.attempted);
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(
+            fixture.runtime_dir().join("execs"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+    }
     fixture.api.close(fixture.owner.take().unwrap()).unwrap();
+    #[cfg(not(target_os = "macos"))]
     assert_eq!(fixture.calls().len(), 9);
 }
 
@@ -407,10 +640,13 @@ impl Drop for ProjectFixture {
 #[test]
 fn create_matching_existing_project_keeps_one_original_hello_and_does_not_reinstall() {
     let project = ProjectFixture::new();
+    #[cfg(not(target_os = "macos"))]
     let mut fixture = Fixture::new_for(
         Some(&project.project),
         vec![fixed(204, b""), fixed(204, b"")],
     );
+    #[cfg(target_os = "macos")]
+    let mut fixture = Fixture::new_for(Some(&project.project), vec![]);
     let owner = fixture.owner.as_mut().unwrap();
     assert_eq!(owner.startup.phase, DaemonPhase::ControlReady);
     assert!(owner.installed.is_none());
@@ -422,12 +658,22 @@ fn create_matching_existing_project_keeps_one_original_hello_and_does_not_reinst
         1
     );
     fixture.api.close(fixture.owner.take().unwrap()).unwrap();
+    #[cfg(not(target_os = "macos"))]
     assert_eq!(fixture.calls().len(), 8);
 }
 #[test]
 fn create_mismatched_existing_project_refuses_before_any_deployment_or_control_effect() {
     let project = ProjectFixture::new();
+    #[cfg(not(target_os = "macos"))]
     let (docker, peer) = Peer::new(vec![], 4096);
+    #[cfg(target_os = "macos")]
+    let root_dir = std::env::temp_dir().join(format!(
+        "sdk-darwin-mismatch-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    #[cfg(target_os = "macos")]
+    let docker = Docker::new(&root_dir, Duration::from_secs(2)).unwrap();
     let api = SandboxApi::new(docker);
     let mut deployment_setup = setup([32; 32], duplex::public_key(&[31; 32]).unwrap());
     let mut manifest = project.project.manifest.clone();
@@ -435,7 +681,7 @@ fn create_mismatched_existing_project_refuses_before_any_deployment_or_control_e
     deployment_setup.existing_store = Some(manifest);
     let result = api.create(
         SandboxCreate {
-            deployment: layerfs_sandbox::backend::docker::SandboxRequest {
+            deployment: SandboxRequest {
                 image: IMAGE.into(),
                 store_volume: "lfs-test-borrowed".into(),
                 port: 30421,
@@ -455,5 +701,8 @@ fn create_mismatched_existing_project_refuses_before_any_deployment_or_control_e
     };
     assert_eq!(failure.phase, SandboxPhase::Validate);
     assert!(failure.sandbox.is_none() && failure.control.is_none() && failure.installed.is_none());
+    #[cfg(not(target_os = "macos"))]
     assert!(peer.finish().is_empty());
+    #[cfg(target_os = "macos")]
+    assert!(!root_dir.exists());
 }

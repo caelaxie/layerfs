@@ -36,10 +36,13 @@ Store calls (`fs`, `branch`, `project.list_branches`) run in this process: the
 first one opens the installed Store file at `storePath` (else
 `LAYERFS_STORE_PATH`) and `close()` releases it; no Sandbox is involved. That
 file is `global/store.sqlite` in the project's volume, so the process runs where
-that volume is mounted (`/layerfs-store` in a Sandbox). This is Linux only, with
-the Store on a local filesystem the daemons share (ext4, xfs, btrfs); anywhere
-else Store calls fail `Unsupported`, and without a `storePath` they fail
-`InvalidInput`. Mount does not scan or materialize the complete tree.
+that volume is mounted (`/layerfs-store` in a Sandbox, or a host path on native
+macOS). This is supported on Linux with a local filesystem the daemons share
+(ext4, xfs, btrfs) and on native macOS (`darwin-arm64`) with a local filesystem
+(APFS, HFS+); anywhere else Store calls fail `Unsupported`, and without a
+`storePath` they fail `InvalidInput`. On native macOS, if no Sandbox has
+installed the Store yet, the first Store call atomically installs `sealed.sqlite`
+to `storePath`. Mount does not scan or materialize the complete tree.
 A project is its home entry, `LAYERFS_HOME/<name>/`; the binding keeps no other
 record of which names it initialized. Init refuses a name whose entry exists
 (`Exists`). Once that entry is deleted, after the project's Sandboxes are closed,
@@ -82,12 +85,12 @@ construct a new client for a new Sandbox.
 | Environment | Meaning |
 | --- | --- |
 | `LAYERFS_HOME` | Absolute private directory for sealed provisioning and discovery. Created as 0700; existing directories must be owned by the current effective user with no group/other access. Records are 0600, not symlinks. |
-| `LAYERFS_DOCKER` | Local Engine Unix socket; `/var/run/docker.sock` is the default for `sandbox.create` and the service Sandbox. |
-| `LAYERFS_IMAGE` | Exact immutable runtime `sha256:...` digest of the service Sandbox the operator entry point uses. `sandbox.create` takes its image as an argument instead. |
-| `LAYERFS_VOLUME` | Existing named local VM volume shared by the project's daemons. |
-| `LAYERFS_DAEMON` | Host path to the built Linux daemon executable. |
+| `LAYERFS_DOCKER` | Local Engine Unix socket on Linux (`/var/run/docker.sock` default); on native macOS, the Sandbox runtime directory root (defaults to `LAYERFS_HOME/_sandboxes` when `/var/run/docker.sock`). |
+| `LAYERFS_IMAGE` | Exact immutable runtime `sha256:...` digest of the service Sandbox the operator entry point uses on Linux (`sandbox.create` takes its image as an argument). Optional on native macOS, where omitted image digests default to `sha256:0000...`. |
+| `LAYERFS_VOLUME` | Existing named local VM volume shared by the project's daemons on Linux, or volume name / absolute directory path on native macOS. |
+| `LAYERFS_DAEMON` | Host path to the built Linux or macOS (`aarch64-apple-darwin`) daemon executable. |
 | `LAYERFS_NATIVE` | Optional addon path; defaults to `native/layerfs.node`. |
-| `LAYERFS_STORE_PATH` | The installed Store file this client's Store calls open in this process; the client option `storePath` wins. It is `global/store.sqlite` in the project's volume, `/layerfs-store/global/store.sqlite` where that volume is mounted at `/layerfs-store`. Linux only, on a local filesystem the daemons share; elsewhere Store calls fail `Unsupported`. Unset, they fail `InvalidInput`. |
+| `LAYERFS_STORE_PATH` | The installed Store file this client's Store calls open in this process; the client option `storePath` wins. It is `global/store.sqlite` in the project's volume, `/layerfs-store/global/store.sqlite` where that volume is mounted at `/layerfs-store` on Linux, or a local APFS/HFS+ host path on native macOS. Supported on Linux (ext4, xfs, btrfs) and native macOS (APFS, HFS+); elsewhere Store calls fail `Unsupported`. Unset, they fail `InvalidInput`. |
 | `LAYERFS_CONTAINER_PREFIX` | Optional. Names every container this client creates `<prefix><Sandbox id>`, the service Sandbox as `<prefix>service.<project>`, so a run can tell its own containers apart. Docker's name rule applies (an ASCII letter or digit, then letters, digits, `_`, `.`, `-`, at most 128). A name another container holds refuses the create before any effect. Unset, Docker chooses the name. |
 | `LAYERFS_DAEMON_HOST` | Optional; the client option `daemonHost` wins. The host this process dials for a daemon's port. Each daemon publishes its port on the Docker host's `127.0.0.1` only, and that stays so. A client inside a container does not share that loopback, so it names the host that reaches it, `host.docker.internal` on Docker Desktop. One resolution, its first address, one connect; nothing is tried again. Unset, the client dials `127.0.0.1`. |
 | `LAYERFS_TRACE` | Optional per-call trace file (see [Call trace](#call-trace)); unset means no trace. |

@@ -10,9 +10,9 @@
 //! once before the delete. One whose effect is unknown keeps the
 //! intent, which refuses later creates until a person resolves it. Nothing
 //! is retried on the caller's behalf.
-use crate::job::{failed, refused, Outcome};
+use crate::job::{Outcome, failed, refused};
 use crate::registry::{
-    lock, random, sandbox, sandbox_refreshed, text, Mount, SandboxState, SANDBOXES,
+    Mount, SANDBOXES, SandboxState, lock, random, sandbox, sandbox_refreshed, text,
 };
 use layerfs_api::internal::{split, workspace};
 use layerfs_api::sandbox::values;
@@ -22,7 +22,14 @@ use layerfs_api::{
 use layerfs_bridge::control::{CommitControl, SdkRefusal, SdkValue};
 use layerfs_bridge::daemon_setup::{DaemonLimits, DaemonSetup};
 use layerfs_history::WorkspaceId;
-use layerfs_sandbox::backend::docker::{CreatePhase, Docker, ReadOnlyVolume, SandboxRequest};
+#[cfg(target_os = "macos")]
+use layerfs_sandbox::backend::darwin::{
+    CreatePhase, Docker, ReadOnlyVolume, Sandbox, SandboxRequest,
+};
+#[cfg(not(target_os = "macos"))]
+use layerfs_sandbox::backend::docker::{
+    CreatePhase, Docker, ReadOnlyVolume, Sandbox, SandboxRequest,
+};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -53,7 +60,13 @@ fn setup(private: [u8; 32], peer: [u8; 32]) -> DaemonSetup {
         store: crate::project::LOCATOR.into(),
         overlay: "/layerfs-local/overlay/overlay.sqlite".into(),
         mounts: "/workspaces".into(),
+        #[cfg(target_os = "macos")]
+        command_uid: crate::discovery::current_uid(),
+        #[cfg(not(target_os = "macos"))]
         command_uid: 501,
+        #[cfg(target_os = "macos")]
+        command_gid: crate::discovery::current_gid(),
+        #[cfg(not(target_os = "macos"))]
         command_gid: 20,
         limits: DaemonLimits {
             connections: DAEMON_CONNECTIONS,
@@ -121,8 +134,39 @@ fn create_selected(args: &SdkValue, service: bool) -> Outcome {
     };
     let mut project = crate::discovery::project(args)?;
     // Inputs are read first, so a refused request leaves no creation intent.
+    #[cfg(target_os = "macos")]
+    let docker_owned;
+    #[cfg(target_os = "macos")]
+    let docker = {
+        let raw = text(deploy, "docker")?;
+        if raw == "/var/run/docker.sock" {
+            docker_owned = crate::discovery::home(args)?
+                .join("_sandboxes")
+                .to_string_lossy()
+                .into_owned();
+            docker_owned.as_str()
+        } else {
+            raw
+        }
+    };
+    #[cfg(not(target_os = "macos"))]
     let docker = text(deploy, "docker")?;
     // A caller's Sandbox runs the image it names; the service Sandbox, the deployment's.
+    #[cfg(target_os = "macos")]
+    let image = if service {
+        match deploy.get("image") {
+            None | Some(SdkValue::Null) => format!("sha256:{}", "0".repeat(64)),
+            Some(SdkValue::Text(s)) => s.clone(),
+            Some(_) => return Err(refused("InvalidInput", "invalid deploy.image")),
+        }
+    } else {
+        match args.get("image") {
+            None | Some(SdkValue::Null) => format!("sha256:{}", "0".repeat(64)),
+            Some(SdkValue::Text(s)) => s.clone(),
+            Some(_) => return Err(refused("InvalidInput", "invalid image")),
+        }
+    };
+    #[cfg(not(target_os = "macos"))]
     let image = if service {
         deploy.get_text("image").ok_or_else(|| {
             refused(
@@ -229,6 +273,62 @@ fn create_claimed(
     let controller = layerfs_bridge::duplex::generate_keypair().map_err(failed)?;
     let daemon = layerfs_bridge::duplex::generate_keypair().map_err(failed)?;
     let mut daemon_setup = setup(daemon.private, controller.public);
+    #[cfg(target_os = "macos")]
+    let box_name = match args
+        .get("deploy")
+        .and_then(|d| d.get_text("containerPrefix"))
+    {
+        Some(prefix) => format!("{prefix}{}", id.trim_start_matches('_')),
+        None => id.trim_start_matches('_').to_owned(),
+    };
+    #[cfg(target_os = "macos")]
+    {
+        let target_store = if project.installed.is_some() {
+            project.manifest.locator.clone()
+        } else if let Some(explicit) = args.get_text("storePath") {
+            explicit.to_owned()
+        } else if Path::new(&store_volume).is_absolute() {
+            Path::new(&store_volume)
+                .join("global")
+                .join("store.sqlite")
+                .to_string_lossy()
+                .into_owned()
+        } else if project.manifest.locator != crate::project::LOCATOR {
+            project.manifest.locator.clone()
+        } else {
+            let home = crate::discovery::home(args)?;
+            home.join("_volumes")
+                .join(&store_volume)
+                .join("global")
+                .join("store.sqlite")
+                .to_string_lossy()
+                .into_owned()
+        };
+        if project.installed.is_none() && project.manifest.locator != target_store {
+            project.manifest.locator = target_store.clone();
+        }
+        if let Some(parent) = Path::new(&target_store).parent() {
+            crate::discovery::directory(parent)?;
+        }
+        let docker_path = Path::new(docker);
+        let root_dir = if docker_path.extension().is_some_and(|ext| ext == "sock") {
+            docker_path.with_extension("darwin")
+        } else {
+            docker_path.to_path_buf()
+        };
+        let runtime_dir = root_dir.join(&box_name).join("runtime");
+        daemon_setup.listen = "127.0.0.1:0".to_owned();
+        daemon_setup.store = target_store;
+        daemon_setup.overlay = runtime_dir
+            .join("overlay")
+            .join("overlay.sqlite")
+            .to_string_lossy()
+            .into_owned();
+        daemon_setup.mounts = runtime_dir
+            .join("workspaces")
+            .to_string_lossy()
+            .into_owned();
+    }
     daemon_setup.existing_store = project.installed.as_ref().map(|installed| {
         let mut manifest = project.manifest.clone();
         manifest.daemon_sqlite = installed.daemon_sqlite.clone();
@@ -238,6 +338,13 @@ fn create_claimed(
     // A deployment's container prefix names the container `<prefix><id>`
     // (the service Sandbox without its leading `_`), so a run can tell its
     // own containers from any other.
+    #[cfg(target_os = "macos")]
+    {
+        docker = docker
+            .naming(&box_name)
+            .map_err(|_| refused("InvalidInput", format!("container name {box_name}")))?;
+    }
+    #[cfg(not(target_os = "macos"))]
     if let Some(prefix) = args
         .get("deploy")
         .and_then(|d| d.get_text("containerPrefix"))
@@ -470,8 +577,7 @@ fn close_gone(args: &SdkValue, container: &str, stopped: bool) -> Outcome {
     let project = project_guard(args, id, text(&value, "project")?)?;
     if stopped {
         let (docker, selector, request) = crate::discovery::runtime(&value)?;
-        match layerfs_sandbox::backend::docker::Sandbox::stopped(docker, selector, request).delete()
-        {
+        match Sandbox::stopped(docker, selector, request).delete() {
             Err(failure) if !failure.container_gone() => return Err(failed(failure)),
             _ => {}
         }

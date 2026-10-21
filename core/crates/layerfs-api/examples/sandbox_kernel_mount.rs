@@ -14,7 +14,10 @@ use layerfs_bridge::{
 };
 use layerfs_history::{BranchId, HistoryCatalogConfig, HistoryName, LayerStackId, WorkspaceId};
 use layerfs_persistence::{PersistenceConfig, SqlitePersistenceProfile};
-use layerfs_sandbox::backend::docker::{Docker, SandboxRequest};
+#[cfg(target_os = "macos")]
+use layerfs_sandbox::backend::darwin::{Docker, ExecHandle, RuntimeOutput, SandboxRequest};
+#[cfg(not(target_os = "macos"))]
+use layerfs_sandbox::backend::docker::{Docker, ExecHandle, RuntimeOutput, SandboxRequest};
 use layerfs_storage::StoragePolicy;
 use layerfs_telemetry::timer::Timing;
 use std::{
@@ -99,10 +102,7 @@ fn setup(private: [u8; 32], peer: [u8; 32]) -> DaemonSetup {
         existing_store: None,
     }
 }
-type Running = (
-    layerfs_sandbox::backend::docker::RuntimeOutput,
-    layerfs_sandbox::backend::docker::ExecHandle,
-);
+type Running = (RuntimeOutput, ExecHandle);
 enum Directory<'a> {
     Mounted(&'a MountedWorkspace),
     Kernel(&'a str),

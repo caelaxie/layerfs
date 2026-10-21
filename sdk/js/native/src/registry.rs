@@ -11,7 +11,11 @@ use crate::job::refused;
 use layerfs_api::MountedWorkspace;
 use layerfs_bridge::control::{SdkRefusal, SdkValue, WorkspaceToken};
 use layerfs_bridge::provision::StoreManifest;
-use layerfs_sandbox::{backend::docker::Sandbox, CommandIdentity};
+use layerfs_sandbox::CommandIdentity;
+#[cfg(target_os = "macos")]
+use layerfs_sandbox::backend::darwin::Sandbox;
+#[cfg(not(target_os = "macos"))]
+use layerfs_sandbox::backend::docker::Sandbox;
 use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 
@@ -122,7 +126,7 @@ impl SandboxState {
             .map(|mount| (mount.workspace.bound.token, pick(mount)));
         match known {
             Some((token, value)) if crate::discovery::mount_file(self, token).exists() => {
-                return Ok(value)
+                return Ok(value);
             }
             _ => crate::discovery::refresh(self)?,
         }

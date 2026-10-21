@@ -3,8 +3,8 @@
 //! The Store is Disposable and sealed under `home/<name>/`; the first Sandbox
 //! of the project installs it into the shared volume. Init's first Branch is
 //! named `main` and the SDK never shows it: `main` is the line of Layers.
-use crate::job::{failed, refused, Outcome};
-use crate::registry::{lock, random, text, Project, INITS};
+use crate::job::{Outcome, failed, refused};
+use crate::registry::{INITS, Project, lock, random, text};
 use layerfs_api::{InitCounters, InitRequest, InitStep, ProjectApi};
 use layerfs_bridge::control::SdkValue;
 use layerfs_bridge::sdk_values::hex;
@@ -50,11 +50,39 @@ pub(crate) fn init(args: &SdkValue) -> Outcome {
     .map_err(failed)?;
     let _guard = crate::discovery::guard(&directory)?;
     let history = |text: &str| HistoryName::new(text).map_err(failed);
+    #[cfg(target_os = "macos")]
+    let locator = if let Some(s) = args.get_text("storePath").filter(|s| !s.is_empty()) {
+        s.to_owned()
+    } else if let Some(v) = args
+        .get("deploy")
+        .and_then(|d| d.get_text("volume"))
+        .filter(|v| !v.is_empty())
+    {
+        if std::path::Path::new(v).is_absolute() {
+            std::path::Path::new(v)
+                .join("global/store.sqlite")
+                .to_string_lossy()
+                .into_owned()
+        } else {
+            home.join("_volumes")
+                .join(v)
+                .join("global/store.sqlite")
+                .to_string_lossy()
+                .into_owned()
+        }
+    } else {
+        directory
+            .join("global/store.sqlite")
+            .to_string_lossy()
+            .into_owned()
+    };
+    #[cfg(not(target_os = "macos"))]
+    let locator = LOCATOR.into();
     let request = InitRequest {
         source,
         store: PersistenceConfig::sqlite(directory.join("sealed.sqlite"))
             .with_sqlite_profile(SqlitePersistenceProfile::Disposable),
-        locator: LOCATOR.into(),
+        locator,
         policy,
         catalog: HistoryCatalogConfig {
             binding_key: random()?.to_vec(),

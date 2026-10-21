@@ -6,9 +6,9 @@
 //! with its output in a log file, and this binding keeps its process id. The
 //! Engine offers no per-exec cancel, so `cancel` signals the process group
 //! from a second command and waits (bounded) until it is gone.
-use crate::job::{failed, refused, Outcome};
+use crate::job::{Outcome, failed, refused};
 use crate::output::Spool;
-use crate::registry::{lock, sandbox, sandbox_refreshed, text, Process, SandboxState};
+use crate::registry::{Process, SandboxState, lock, sandbox, sandbox_refreshed, text};
 use layerfs_bridge::control::{SdkRefusal, SdkValue};
 use std::time::Duration;
 
@@ -88,6 +88,11 @@ pub(crate) fn exec(args: &SdkValue) -> Outcome {
         "proc_{}",
         layerfs_bridge::sdk_values::hex(&crate::registry::random()?[..12])
     );
+    #[cfg(target_os = "macos")]
+    let script = format!(
+        "/usr/bin/perl -e 'setpgrp(0, 0); exec @ARGV' bash -c \"$0\" >/tmp/layerfs-{id}.log 2>&1 </dev/null & echo $!"
+    );
+    #[cfg(not(target_os = "macos"))]
     let script = format!("setsid bash -c \"$0\" >/tmp/layerfs-{id}.log 2>&1 </dev/null & echo $!");
     let (code, stdout, stderr) = run(
         &state,
@@ -132,19 +137,75 @@ pub(crate) fn exec(args: &SdkValue) -> Outcome {
 /// True while the process group of `pid` has a member that is not a zombie.
 /// The container's first process is the daemon, which does not reap orphans,
 /// so a finished member can stay a zombie that `kill -0` still finds.
+#[cfg(not(target_os = "macos"))]
 fn start_time(state: &SandboxState, pid: u32) -> Result<Option<String>, SdkRefusal> {
-    let (code, out, _) = run(state, "/tmp", vec!["bash".into(), "-c".into(), format!("s=$(cat /proc/{pid}/stat 2>/dev/null) || exit 1; set -- ${{s##*) }}; shift 19; printf '%s' \"$1\"")], false)?;
+    let (code, out, _) = run(
+        state,
+        "/tmp",
+        vec![
+            "bash".into(),
+            "-c".into(),
+            format!(
+                "s=$(cat /proc/{pid}/stat 2>/dev/null) || exit 1; set -- ${{s##*) }}; shift 19; printf '%s' \"$1\""
+            ),
+        ],
+        false,
+    )?;
     if code == 0 {
         Ok(Some(String::from_utf8_lossy(out.kept()).into_owned()))
     } else {
         Ok(None)
     }
 }
+#[cfg(target_os = "macos")]
+fn start_time(state: &SandboxState, pid: u32) -> Result<Option<String>, SdkRefusal> {
+    let (code, out, _) = run(
+        state,
+        "/tmp",
+        vec![
+            "bash".into(),
+            "-c".into(),
+            format!("ps -p {pid} -o state=,lstart= 2>/dev/null"),
+        ],
+        false,
+    )?;
+    if code != 0 {
+        return Ok(None);
+    }
+    let text = String::from_utf8_lossy(out.kept()).trim().to_owned();
+    let mut parts = text.split_whitespace();
+    let Some(st) = parts.next() else {
+        return Ok(None);
+    };
+    if st.starts_with('Z') {
+        return Ok(None);
+    }
+    let start = parts.collect::<Vec<_>>().join(" ");
+    if start.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(start))
+    }
+}
+#[cfg(not(target_os = "macos"))]
 fn alive(state: &SandboxState, pid: u32) -> Result<bool, SdkRefusal> {
     // After the `(comm) ` field: state, parent, process group.
     let probe = format!(
         "for f in /proc/[0-9]*/stat; do s=$(cat \"$f\" 2>/dev/null) || continue; \
          set -- ${{s##*) }}; [ \"$1\" != Z ] && [ \"$3\" = {pid} ] && exit 0; done; exit 1"
+    );
+    let (code, _, _) = run(
+        state,
+        "/tmp",
+        vec!["bash".into(), "-c".into(), probe],
+        false,
+    )?;
+    Ok(code == 0)
+}
+#[cfg(target_os = "macos")]
+fn alive(state: &SandboxState, pid: u32) -> Result<bool, SdkRefusal> {
+    let probe = format!(
+        "ps -axo pid=,pgid=,state= 2>/dev/null | awk '$2 == {pid} && $3 !~ /^Z/ {{ found=1; exit 0 }} END {{ exit(found ? 0 : 1) }}'"
     );
     let (code, _, _) = run(
         state,

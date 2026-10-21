@@ -3,13 +3,17 @@
 //! sandbox.rs, so it reaches the private close paths.
 use super::{close, close_gone, service_existing};
 use layerfs_bridge::control::SdkValue;
+#[cfg(not(target_os = "macos"))]
 use std::{
     io::{BufRead, BufReader, Write},
-    os::unix::{fs::DirBuilderExt, net::UnixListener},
-    path::{Path, PathBuf},
-    sync::atomic::{AtomicUsize, Ordering},
+    os::unix::net::UnixListener,
     thread::{self, JoinHandle},
     time::{Duration, Instant},
+};
+use std::{
+    os::unix::fs::DirBuilderExt,
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 const CID: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -29,6 +33,14 @@ fn home() -> PathBuf {
     private(&home.join("_sandboxes"));
     private(&home.join("_sandboxes").join(ID));
     private(&home.join("proj"));
+    #[cfg(target_os = "macos")]
+    let docker_endpoint = {
+        let dir = home.join("darwin-root");
+        private(&dir);
+        dir
+    };
+    #[cfg(not(target_os = "macos"))]
+    let docker_endpoint = home.join("docker.sock");
     let bytes = |n: u8| SdkValue::Bytes(vec![n; 32]);
     crate::discovery::save(
         &home.join("_sandboxes").join(ID).join("sandbox.record"),
@@ -36,10 +48,7 @@ fn home() -> PathBuf {
             ("id", SdkValue::text(ID)),
             ("project", SdkValue::text("proj")),
             ("container", SdkValue::text(CID)),
-            (
-                "docker",
-                SdkValue::text(home.join("docker.sock").to_str().unwrap()),
-            ),
+            ("docker", SdkValue::text(docker_endpoint.to_str().unwrap())),
             (
                 "image",
                 SdkValue::text(format!("sha256:{}", "a".repeat(64))),
@@ -60,7 +69,23 @@ fn home() -> PathBuf {
     home
 }
 
+#[cfg(target_os = "macos")]
+fn write_darwin_stopped(home: &Path) -> PathBuf {
+    let runtime = home.join("darwin-root").join(CID).join("runtime");
+    std::fs::create_dir_all(&runtime).unwrap();
+    let state = format!(
+        "id={CID}\n\
+         image=7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161\n\
+         store_volume=6c66732d746573742d626f72726f776564\n\
+         port=30421\n\
+         stopped=1\n"
+    );
+    std::fs::write(runtime.join("sandbox.state"), state).unwrap();
+    runtime
+}
+
 /// The Engine at `home/docker.sock`, answering one request with `status` and `body`.
+#[cfg(not(target_os = "macos"))]
 fn engine(home: &Path, status: u16, body: &str) -> JoinHandle<String> {
     let engine = engines(home, vec![(status, body.to_owned())]);
     thread::spawn(move || engine.join().unwrap().remove(0))
@@ -68,6 +93,7 @@ fn engine(home: &Path, status: u16, body: &str) -> JoinHandle<String> {
 
 /// The Engine at `home/docker.sock`, answering each request, one connection
 /// each, with the next `(status, body)`; it returns their request heads.
+#[cfg(not(target_os = "macos"))]
 fn engines(home: &Path, responses: Vec<(u16, String)>) -> JoinHandle<Vec<String>> {
     let listener = UnixListener::bind(home.join("docker.sock")).unwrap();
     listener.set_nonblocking(true).unwrap();
@@ -112,10 +138,12 @@ fn engines(home: &Path, responses: Vec<(u16, String)>) -> JoinHandle<Vec<String>
 }
 
 /// The container's system-call filter as the Engine carries it inside a JSON string.
+#[cfg(not(target_os = "macos"))]
 const SECCOMP: &str = r#"seccomp={\"defaultAction\":\"SCMP_ACT_ALLOW\",\"syscalls\":[{\"names\":[\"unshare\",\"clone\"],\"action\":\"SCMP_ACT_ERRNO\",\"errnoRet\":1,\"args\":[{\"index\":0,\"value\":268435456,\"valueTwo\":268435456,\"op\":\"SCMP_CMP_MASKED_EQ\"}]},{\"names\":[\"clone3\"],\"action\":\"SCMP_ACT_ERRNO\",\"errnoRet\":38}]}"#;
 
 /// The Engine's inspection of CID after its process exited (Docker
 /// restarted): the recorded deployment, intact, not running, no port published.
+#[cfg(not(target_os = "macos"))]
 fn exited() -> String {
     let image = format!("sha256:{}", "a".repeat(64));
     format!(
@@ -133,6 +161,7 @@ fn args(home: &Path) -> SdkValue {
 #[test]
 fn a_gone_container_closes_by_removing_its_records() {
     let home = home();
+    #[cfg(not(target_os = "macos"))]
     let engine = engine(
         &home,
         404,
@@ -141,10 +170,13 @@ fn a_gone_container_closes_by_removing_its_records() {
     let closed = close(&args(&home)).unwrap();
     assert_eq!(closed.get_text("kind"), Some("Closed"));
     assert_eq!(closed.get_text("id"), Some(ID));
-    assert!(engine
-        .join()
-        .unwrap()
-        .starts_with(&format!("GET /v1.54/containers/{CID}/json")));
+    #[cfg(not(target_os = "macos"))]
+    assert!(
+        engine
+            .join()
+            .unwrap()
+            .starts_with(&format!("GET /v1.54/containers/{CID}/json"))
+    );
     assert!(
         !home.join("_sandboxes").join(ID).exists(),
         "its name is free again"
@@ -156,15 +188,24 @@ fn a_gone_container_closes_by_removing_its_records() {
 #[test]
 fn another_404_is_a_failure_that_removes_nothing() {
     let home = home();
+    #[cfg(not(target_os = "macos"))]
     let engine = engine(&home, 404, r#"{"message":"page not found"}"#);
+    #[cfg(target_os = "macos")]
+    {
+        let runtime = home.join("darwin-root").join(CID).join("runtime");
+        std::fs::create_dir_all(&runtime).unwrap();
+        std::fs::write(runtime.join("sandbox.state"), b"id=invalid\n").unwrap();
+    }
     let refusal = close(&args(&home)).unwrap_err();
     assert_eq!(refusal.code, "Failed");
+    #[cfg(not(target_os = "macos"))]
     engine.join().unwrap();
-    assert!(home
-        .join("_sandboxes")
-        .join(ID)
-        .join("sandbox.record")
-        .exists());
+    assert!(
+        home.join("_sandboxes")
+            .join(ID)
+            .join("sandbox.record")
+            .exists()
+    );
     assert!(home.join("proj").join("service.record").exists());
     std::fs::remove_dir_all(home).unwrap();
 }
@@ -175,11 +216,12 @@ fn a_name_created_again_with_another_container_is_left_alone() {
     let other = "c".repeat(64);
     let refusal = close_gone(&args(&home), &other, false).unwrap_err();
     assert_eq!(refusal.code, "Busy");
-    assert!(home
-        .join("_sandboxes")
-        .join(ID)
-        .join("sandbox.record")
-        .exists());
+    assert!(
+        home.join("_sandboxes")
+            .join(ID)
+            .join("sandbox.record")
+            .exists()
+    );
     assert!(home.join("proj").join("service.record").exists());
     std::fs::remove_dir_all(home).unwrap();
 }
@@ -187,8 +229,12 @@ fn a_name_created_again_with_another_container_is_left_alone() {
 #[test]
 fn a_stopped_container_is_refused_as_gone_then_closed_by_deleting_it() {
     let home = home();
+    #[cfg(not(target_os = "macos"))]
     let engine = engine(&home, 200, &exited());
+    #[cfg(target_os = "macos")]
+    write_darwin_stopped(&home);
     let refusal = crate::discovery::reopen(&args(&home)).err().unwrap();
+    #[cfg(not(target_os = "macos"))]
     engine.join().unwrap();
     assert_eq!(refusal.code, "NoSuchSandbox");
     assert!(matches!(
@@ -204,15 +250,22 @@ fn a_stopped_container_is_refused_as_gone_then_closed_by_deleting_it() {
         Some((CID, true))
     );
 
+    #[cfg(not(target_os = "macos"))]
     std::fs::remove_file(home.join("docker.sock")).unwrap();
+    #[cfg(not(target_os = "macos"))]
     let engine = engines(&home, vec![(200, exited()), (204, String::new())]);
     let closed = close(&args(&home)).unwrap();
     assert_eq!(closed.get_text("kind"), Some("Closed"));
-    let requests = engine.join().unwrap();
-    assert!(requests[0].starts_with(&format!("GET /v1.54/containers/{CID}/json")));
-    assert!(requests[1].starts_with(&format!(
-        "DELETE /v1.54/containers/{CID}?force=false&v=false"
-    )));
+    #[cfg(not(target_os = "macos"))]
+    {
+        let requests = engine.join().unwrap();
+        assert!(requests[0].starts_with(&format!("GET /v1.54/containers/{CID}/json")));
+        assert!(requests[1].starts_with(&format!(
+            "DELETE /v1.54/containers/{CID}?force=false&v=false"
+        )));
+    }
+    #[cfg(target_os = "macos")]
+    assert!(!home.join("darwin-root").join(CID).exists());
     assert!(
         !home.join("_sandboxes").join(ID).exists(),
         "its name is free again"
@@ -224,17 +277,36 @@ fn a_stopped_container_is_refused_as_gone_then_closed_by_deleting_it() {
 #[test]
 fn a_stopped_container_the_engine_will_not_delete_keeps_its_records() {
     let home = home();
+    #[cfg(not(target_os = "macos"))]
     let running = r#"{"message":"cannot remove container: container is running"}"#;
+    #[cfg(not(target_os = "macos"))]
     let engine = engines(&home, vec![(200, exited()), (409, running.to_owned())]);
+    #[cfg(target_os = "macos")]
+    let locked = {
+        use std::os::unix::fs::PermissionsExt;
+        let runtime = write_darwin_stopped(&home);
+        let locked = runtime.join("execs/locked");
+        std::fs::create_dir_all(&locked).unwrap();
+        std::fs::write(locked.join("child"), b"x").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).unwrap();
+        locked
+    };
     let refusal = close(&args(&home)).unwrap_err();
     assert_eq!(refusal.code, "Failed");
+    #[cfg(not(target_os = "macos"))]
     assert_eq!(engine.join().unwrap().len(), 2);
-    assert!(home
-        .join("_sandboxes")
-        .join(ID)
-        .join("sandbox.record")
-        .exists());
+    assert!(
+        home.join("_sandboxes")
+            .join(ID)
+            .join("sandbox.record")
+            .exists()
+    );
     assert!(home.join("proj").join("service.record").exists());
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
     std::fs::remove_dir_all(home).unwrap();
 }
 

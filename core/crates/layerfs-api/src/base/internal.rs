@@ -96,6 +96,11 @@ pub fn into_connection(control: Control) -> Connection {
     control.into_connection()
 }
 
+#[cfg(all(unix, target_os = "macos"))]
+use layerfs_sandbox::backend::darwin::{ExecCreateFailure, ExecCreated, Sandbox};
+#[cfg(all(unix, not(target_os = "macos")))]
+use layerfs_sandbox::backend::docker::{ExecCreateFailure, ExecCreated, Sandbox};
+
 /// Original authenticated control owner, without a reconnect or reset.
 #[cfg(unix)]
 pub fn control(sandbox: &mut crate::ManagedSandbox) -> &mut Control {
@@ -107,11 +112,7 @@ pub fn control(sandbox: &mut crate::ManagedSandbox) -> &mut Control {
 #[cfg(unix)]
 pub fn split(
     sandbox: crate::ManagedSandbox,
-) -> (
-    layerfs_sandbox::backend::docker::Sandbox,
-    Control,
-    layerfs_sandbox::CommandIdentity,
-) {
+) -> (Sandbox, Control, layerfs_sandbox::CommandIdentity) {
     (sandbox.runtime, sandbox.control, sandbox.command_identity)
 }
 /// Original one-attempt startup used by existing-Store deployments and lifecycle proofs.
@@ -133,24 +134,19 @@ pub fn sandbox_status(
 
 /// Disjoint original runtime/control borrows for concurrent Workspace orchestration.
 #[cfg(unix)]
-pub fn parts(
-    sandbox: &mut crate::ManagedSandbox,
-) -> (&layerfs_sandbox::backend::docker::Sandbox, &mut Control) {
+pub fn parts(sandbox: &mut crate::ManagedSandbox) -> (&Sandbox, &mut Control) {
     (&sandbox.runtime, &mut sandbox.control)
 }
 
 /// The same ordinary launcher for external host commands and disjoint concurrent proof borrows.
 #[cfg(unix)]
 pub fn exec(
-    sandbox: &layerfs_sandbox::backend::docker::Sandbox,
+    sandbox: &Sandbox,
     identity: layerfs_sandbox::CommandIdentity,
     arguments: Vec<String>,
     environment: Vec<String>,
     directory: String,
     stdin: bool,
-) -> Result<
-    layerfs_sandbox::backend::docker::ExecCreated,
-    Box<layerfs_sandbox::backend::docker::ExecCreateFailure>,
-> {
+) -> Result<ExecCreated, Box<ExecCreateFailure>> {
     crate::sandbox::exec::launch(sandbox, identity, arguments, environment, directory, stdin)
 }

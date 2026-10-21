@@ -1,9 +1,10 @@
 //! Optional ordinary Sandbox launch at the acknowledged mounted directory.
 use crate::{ManagedSandbox, MountedWorkspace, WorkspaceApi};
-use layerfs_sandbox::{
-    backend::docker::{ExecCreateFailure, ExecCreated, ExecRequest, Sandbox},
-    CommandIdentity,
-};
+use layerfs_sandbox::CommandIdentity;
+#[cfg(target_os = "macos")]
+use layerfs_sandbox::backend::darwin::{ExecCreateFailure, ExecCreated, ExecRequest, Sandbox};
+#[cfg(not(target_os = "macos"))]
+use layerfs_sandbox::backend::docker::{ExecCreateFailure, ExecCreated, ExecRequest, Sandbox};
 
 impl WorkspaceApi<'_> {
     /// Creates one ordinary command at this mount using the deployment's admitted identity.
