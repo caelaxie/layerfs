@@ -1,6 +1,6 @@
 //! Whether this process may open the global Store directly (#352 F-020).
 //!
-//! Every opener of one Store must share one Linux kernel and the local
+//! Every opener of one Store must share one local kernel and the local
 //! filesystem that holds it: SQLite's WAL locks and the writers' admission
 //! lane (a `flock` on the Store's directory) coordinate only within one
 //! kernel. The guard checks what this process can verify before it opens any
@@ -9,7 +9,7 @@
 //! `Unsupported` with its reason; there is no other route to fall back to.
 use std::path::Path;
 
-/// Filesystems that carry the Store's locks: ext4, xfs and btrfs.
+/// Filesystems that carry the Store's locks on Linux: ext4, xfs and btrfs.
 #[cfg(target_os = "linux")]
 const LOCAL: [(nix::sys::statfs::FsType, &str); 3] = [
     (nix::sys::statfs::EXT4_SUPER_MAGIC, "ext4"),
@@ -30,18 +30,20 @@ impl std::fmt::Display for Unsupported {
 /// Checks the platform and the filesystem holding `store`'s directory,
 /// before anything is opened. Returns the filesystem's name.
 pub fn check(store: &Path) -> Result<&'static str, Unsupported> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let directory = store
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let stat = nix::sys::statfs::statfs(directory).map_err(|error| {
+        Unsupported(format!(
+            "the Store's directory {} cannot be examined: {error}",
+            directory.display()
+        ))
+    })?;
     #[cfg(target_os = "linux")]
     {
-        let directory = store
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        let stat = nix::sys::statfs::statfs(directory).map_err(|error| {
-            Unsupported(format!(
-                "the Store's directory {} cannot be examined: {error}",
-                directory.display()
-            ))
-        })?;
         let kind = stat.filesystem_type();
         LOCAL
             .iter()
@@ -56,11 +58,22 @@ pub fn check(store: &Path) -> Result<&'static str, Unsupported> {
                 ))
             })
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        match stat.filesystem_type_name() {
+            "apfs" => Ok("apfs"),
+            other => Err(Unsupported(format!(
+                "filesystem {other} at {} does not carry SQLite locks; \
+                 direct Store access on macOS needs apfs",
+                directory.display()
+            ))),
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = store;
         Err(Unsupported(
-            "direct Store access needs the daemons' Linux kernel".to_owned(),
+            "direct Store access needs a supported local kernel".to_owned(),
         ))
     }
 }

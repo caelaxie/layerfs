@@ -1,11 +1,11 @@
 //! Cooperative readiness must preserve SQLite's own POSIX lock custody.
 //! Uses public Stores and an independently bounded raw SQLite writer process.
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 mod support;
 use layerfs_content::{FinalizedObject, ObjectRole};
 use layerfs_history::HistoryCatalogConfig;
 use layerfs_persistence::{Handles, PersistenceConfig, SqlitePersistenceProfile};
-use layerfs_storage::{port::*, Storage, StoragePolicy};
+use layerfs_storage::{Storage, StoragePolicy, port::*};
 use std::{
     io::{BufRead, BufReader, Write},
     path::Path,
@@ -143,7 +143,14 @@ fn check(drop_peer: bool) {
     let result = first.storage.reserve(reserve());
     let after = first.diagnostics().unwrap();
     held.release();
-    println!("SQLITE_LOCK_CUSTODY peer_dropped={drop_peer} main_shared={main_shared} busy={} begin_statements={} write_transactions={} write_commits={} rollbacks={}", matches!(result, Err(PersistenceError::Busy)), after.statements-before.statements, after.write_transactions-before.write_transactions, after.write_commits-before.write_commits, after.rollbacks-before.rollbacks);
+    println!(
+        "SQLITE_LOCK_CUSTODY peer_dropped={drop_peer} main_shared={main_shared} busy={} begin_statements={} write_transactions={} write_commits={} rollbacks={}",
+        matches!(result, Err(PersistenceError::Busy)),
+        after.statements - before.statements,
+        after.write_transactions - before.write_transactions,
+        after.write_commits - before.write_commits,
+        after.rollbacks - before.rollbacks
+    );
     assert!(
         matches!(result, Err(PersistenceError::Busy)),
         "raw SQLite writer was bypassed after cooperative writes: {result:?}"
