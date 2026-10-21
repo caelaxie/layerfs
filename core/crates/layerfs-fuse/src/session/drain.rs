@@ -1,6 +1,6 @@
 //! Reversible plain detach, then complete connection and request drain.
 use super::state::{DrainStage, Drained, KernelSession, Undrained};
-use crate::{mount::syscalls, DispatchError, MountWork};
+use crate::{DispatchError, MountWork, mount::syscalls};
 use fuser::SessionPhase;
 use nix::errno::Errno;
 use std::{any::Any, fs, sync::atomic::Ordering, time::Instant};
@@ -28,7 +28,7 @@ impl KernelSession {
         if self.is_detached() || self.aborted.get().is_some() {
             return Err(Errno::EINVAL);
         }
-        match syscalls::detach(&self.directory) {
+        match self.plain_detach() {
             Ok(()) => {
                 self.detached.store(true, Ordering::Release);
                 // Known detach is the fence: later receives are refused and
@@ -38,6 +38,20 @@ impl KernelSession {
             }
             Err(Errno::EBUSY) => Ok(Detach::Busy),
             Err(errno) => Err(errno),
+        }
+    }
+    #[cfg(target_os = "linux")]
+    fn plain_detach(&mut self) -> Result<(), Errno> {
+        syscalls::detach(&self.directory)
+    }
+    #[cfg(target_os = "macos")]
+    fn plain_detach(&mut self) -> Result<(), Errno> {
+        if let Some(mut unmounter) = self.unmounter.take() {
+            unmounter
+                .unmount()
+                .map_err(|error| error.raw_os_error().map_or(Errno::EIO, Errno::from_raw))
+        } else {
+            syscalls::detach(&self.directory)
         }
     }
     /// Establishes that every created loop is joined and no received, running
@@ -72,7 +86,7 @@ impl KernelSession {
                     stage: DrainStage::Lane,
                     panic: None,
                     lane: Some(lane),
-                })
+                });
             }
         }
         if let (Some(monitor), true) = (&self.monitor, self.owner.is_some()) {

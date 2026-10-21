@@ -2,6 +2,6 @@
 mod profile;
 pub(crate) mod syscalls;
 
-pub(crate) use profile::negotiate;
 pub use profile::Negotiation;
+pub(crate) use profile::negotiate;
 pub use syscalls::{AbortWrite, MountEntry};

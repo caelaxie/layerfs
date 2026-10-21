@@ -1,7 +1,7 @@
 //! Per-opcode callback time (#352 F-032 D0): a timed callback charges its own
 //! opcode with its wall time and no other opcode.
-#![cfg(target_os = "linux")]
-use layerfs_fuse::request::{Accounting, Opcode, OPCODES};
+#![cfg(any(target_os = "linux", target_os = "macos"))]
+use layerfs_fuse::request::{Accounting, OPCODES, Opcode};
 use std::time::{Duration, Instant};
 
 #[test]

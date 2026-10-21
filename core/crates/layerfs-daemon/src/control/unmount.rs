@@ -1,8 +1,8 @@
 //! Normal terminal unmount: reversible probe, complete drain, then Close.
 use super::{
+    Failure, KernelEvidence, Service, Success,
     kernel::Kernel,
     registry::{bound_mut, idle},
-    Failure, KernelEvidence, Service, Success,
 };
 use crate::store::BoundWorkspace;
 use layerfs_bridge::control::{Activity, ForcedFacts, Reply, UnmountControl, WorkspaceToken};
@@ -15,7 +15,7 @@ type Receipt = Option<Box<KernelEvidence>>;
 pub(super) enum Departure {
     /// No kernel mount is owned: logical Close is the whole operation.
     Unattached,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     Session(Box<super::serving::Attached>),
 }
 impl Service {
@@ -30,9 +30,9 @@ impl Service {
         let (workspace, departure) = self.admit_unmount(token)?;
         match departure {
             Departure::Unattached => {}
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             Departure::Session(attached) => {
-                return self.unmount_kernel(token, workspace, *attached)
+                return self.unmount_kernel(token, workspace, *attached);
             }
         };
         self.close(token, &workspace, None)
@@ -46,22 +46,22 @@ impl Service {
         let mut entries = self.entries.lock().map_err(|_| Failure::Poisoned)?;
         let value = bound_mut(&mut entries, token)?;
         // Retained custody answers before ordinary activity admission.
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         if let Kernel::Retained(kept) = &value.kernel {
             return Err(Failure::Retained(Box::new(kept.custody(token))));
         }
         idle(value)?;
         let departure = match value.kernel {
             Kernel::Unattached => Departure::Unattached,
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             Kernel::Attaching => {
                 return Err(Failure::kernel(
                     layerfs_bridge::control::ControlCode::Unknown,
                     "unmount:admission",
                     "original Attach outcome retained",
-                ))
+                ));
             }
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             _ => Departure::Session(super::detach::take(
                 &mut value.kernel,
                 layerfs_bridge::control::MountPhase::Probing,
@@ -145,7 +145,7 @@ impl Service {
         kernel: Receipt,
         forced: Option<ForcedFacts>,
     ) -> Failure {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         if kernel.is_some() {
             return self.retain(
                 token,
@@ -156,7 +156,7 @@ impl Service {
                 forced,
             );
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let _ = (kernel, forced);
         if let Ok(mut entries) = self.entries.lock() {
             if let Ok(binding) = bound_mut(&mut entries, token) {
@@ -170,8 +170,8 @@ impl Service {
         }
         failure
     }
-    /// Attach is a Linux capability; elsewhere it is refused before effects.
-    #[cfg(not(target_os = "linux"))]
+    /// Attach is a Linux and macOS capability; elsewhere it is refused before effects.
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     pub(super) fn attach(
         &self,
         _token: WorkspaceToken,

@@ -3,9 +3,9 @@
 //! service's ([`layerfs_store_service::telemetry`]).
 use crate::control::{Failure, Success};
 use layerfs_bridge::control::SdkValue;
+pub use layerfs_store_service::telemetry::{Recording, phase, recording, timed};
 pub(crate) use layerfs_store_service::telemetry::{delta, sql, sql_values};
 use layerfs_store_service::telemetry::{named, timing};
-pub use layerfs_store_service::telemetry::{phase, recording, timed, Recording};
 use layerfs_telemetry::timer::TimingReport;
 
 /// The telemetry of one traced request: its timing, its Store SQL work, the
@@ -49,7 +49,7 @@ pub(crate) fn value(
 
 /// The Workspace's kernel opcode counts, frame dispositions, largest request
 /// sizes and per-opcode callback nanoseconds (`ns`) since attach.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn fuse(w: &layerfs_fuse::request::OpcodeWork) -> SdkValue {
     use layerfs_fuse::request::Opcode;
     let extra = [

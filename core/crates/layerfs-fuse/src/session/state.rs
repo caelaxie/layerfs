@@ -1,9 +1,9 @@
 //! Exact per-connection custody: mount, receive loops, their owner and receipts.
 use crate::{
+    DispatchError, MountRequests, MountWork,
     mount::{AbortWrite, MountEntry, Negotiation},
     ports::{FailedDemands, Fence},
     request::{Accounting, OpcodeWork},
-    DispatchError, MountRequests, MountWork,
 };
 use fuser::{SessionMonitor, SessionOutcome, SessionPhase, SessionSnapshot};
 use layerfs_overlay::KernelMount;
@@ -15,8 +15,8 @@ use std::{
     io,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc, OnceLock,
+        atomic::{AtomicBool, Ordering},
     },
     thread::JoinHandle,
     time::Duration,
@@ -66,6 +66,8 @@ pub struct KernelSession {
     pub(super) drain_wait: Duration,
     /// Kernel cache invalidation for this connection, once it is serving.
     pub(super) invalidator: Option<super::Invalidator>,
+    #[cfg(target_os = "macos")]
+    pub(super) unmounter: Option<fuser::SessionUnmounter>,
 }
 /// Maintained observations only: no syscall, SQL job or filesystem request.
 #[derive(Clone, Copy, Debug)]
@@ -137,7 +139,10 @@ impl KernelSession {
             accounting: self.accounting.clone(),
             monitor: self.monitor.clone(),
             detached: self.detached.clone(),
+            #[cfg(not(target_os = "macos"))]
             abort_bound: self.abort.is_some() || self.aborted.get().is_some(),
+            #[cfg(target_os = "macos")]
+            abort_bound: self.entry.is_some() || self.aborted.get().is_some(),
             aborted: self.aborted.clone(),
         }
     }

@@ -1,17 +1,17 @@
 //! Original control operation receipts, independent of delivery acknowledgement.
 use crate::{
-    store::{BindRefusal, CommitFailure, CommitSuccess},
     OwnerError,
+    store::{BindRefusal, CommitFailure, CommitSuccess},
 };
 use layerfs_bridge::control::{ControlCode, Reply};
 use layerfs_history::HistoryError;
 use layerfs_workspace::WorkspaceError;
 /// Original kernel terminal receipt; it already owns the drained connection
 /// facts. Keep their concrete type instead of erasing counted work behind Debug.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub type KernelEvidence = layerfs_fuse::session::Drained;
 /// Kernel sessions cannot be constructed on other platforms.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 #[derive(Debug)]
 pub enum KernelEvidence {}
 /// Original known control result with every attempted engine/Commit completion.
@@ -65,7 +65,7 @@ impl Success {
     }
 }
 impl Failure {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(super) fn kernel(
         code: ControlCode,
         phase: &'static str,

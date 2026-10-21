@@ -1,11 +1,11 @@
 //! Short control admission over bounded daemon-owned Workspace routes.
 use super::{
-    kernel::{Kernel, KernelServing},
     Failure,
+    kernel::{Kernel, KernelServing},
 };
 use crate::{
-    store::{BoundWorkspace, Store},
     Owner, OwnerClient,
+    store::{BoundWorkspace, Store},
 };
 use layerfs_bridge::control::{Activity, ControlCode, WorkspaceToken};
 use layerfs_history::{BranchSnapshot, CommitOutcome, WorkspaceId};
@@ -91,7 +91,7 @@ pub(super) fn bound(
             return Err(Failure::Rejected(
                 ControlCode::Busy,
                 "Workspace binding retained",
-            ))
+            ));
         }
         None => return Err(Failure::Rejected(ControlCode::Missing, "Workspace absent")),
     };
@@ -108,7 +108,7 @@ pub(super) fn bound_mut(
             return Err(Failure::Rejected(
                 ControlCode::Busy,
                 "Workspace binding retained",
-            ))
+            ));
         }
         None => return Err(Failure::Rejected(ControlCode::Missing, "Workspace absent")),
     };

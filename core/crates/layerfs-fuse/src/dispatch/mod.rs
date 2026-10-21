@@ -5,5 +5,5 @@ mod types;
 pub use diagnostics::MountWork;
 pub use requests::{InputFailure, MountRequests, Received, RequestOwner};
 pub use types::{
-    DispatchError, FailureView, RequestDisposition, RequestFuture, MAX_INPUT_BYTES, RECEIVE_SLOTS,
+    DispatchError, FailureView, MAX_INPUT_BYTES, RECEIVE_SLOTS, RequestDisposition, RequestFuture,
 };

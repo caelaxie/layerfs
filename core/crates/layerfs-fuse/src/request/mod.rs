@@ -10,7 +10,7 @@ mod state;
 mod terminal;
 
 pub(crate) use crate::phase::charge;
-pub use crate::phase::{Phase, PHASES};
-pub use accounting::{Accounting, Disposal, Opcode, OpcodeWork, Timed, OPCODES};
+pub use crate::phase::{PHASES, Phase};
+pub use accounting::{Accounting, Disposal, OPCODES, Opcode, OpcodeWork, Timed};
 pub use failure::{KernelInput, RequestFailure};
 pub use state::KernelFilesystem;

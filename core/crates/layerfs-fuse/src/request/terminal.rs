@@ -17,10 +17,10 @@
 //! job already submitted is never ended here: its request receives the
 //! original result first.
 use crate::{
+    RequestDisposition,
     coherence::reply_order,
     operations::{DirectoryFailure, MutationFailure, ReadFailure},
     ports::Fence,
-    RequestDisposition,
 };
 use fuser::Errno;
 
@@ -30,11 +30,7 @@ pub(super) const STOPPED: Errno = Errno::ENOTCONN;
 
 /// The one reply of a failed request: stopped, or a failure of its own.
 pub(super) fn errno(fenced: bool) -> Errno {
-    if fenced {
-        STOPPED
-    } else {
-        Errno::EIO
-    }
+    if fenced { STOPPED } else { Errno::EIO }
 }
 pub(super) async fn read(fence: &Fence, failure: ReadFailure) -> RequestDisposition {
     if failure.fenced() {

@@ -5,7 +5,7 @@ use layerfs_overlay::KernelMount;
 use std::{
     any::Any,
     fmt,
-    panic::{catch_unwind, AssertUnwindSafe},
+    panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, Condvar, Mutex},
     task::{Context, Poll, Wake, Waker},
     thread,
@@ -216,10 +216,12 @@ impl RequestOwner {
     pub fn serve(self, mut future: RequestFuture) -> Result<(), DispatchError> {
         let waker = Waker::from(Arc::new(Current(thread::current())));
         let mut context = Context::from_waker(&waker);
-        let result = catch_unwind(AssertUnwindSafe(|| loop {
-            match future.as_mut().poll(&mut context) {
-                Poll::Ready(result) => break result,
-                Poll::Pending => thread::park(),
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            loop {
+                match future.as_mut().poll(&mut context) {
+                    Poll::Ready(result) => break result,
+                    Poll::Pending => thread::park(),
+                }
             }
         }));
         let failure = match result {

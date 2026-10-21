@@ -9,11 +9,11 @@
 //! At most [`PATHS`] paths are named; the report says when some are not. The
 //! check is an observation before terminal admission, so a write that lands
 //! after it is closed with the Workspace.
-use super::{registry::bound, Failure, Service};
+use super::{Failure, Service, registry::bound};
 use layerfs_bridge::control::{DirtyReport, WorkspaceToken};
-use layerfs_content::compare::{locate, TreeTable};
-use layerfs_content::filesystem::FilesystemRootId;
 use layerfs_content::ObjectId;
+use layerfs_content::compare::{TreeTable, locate};
+use layerfs_content::filesystem::FilesystemRootId;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Paths one report names.

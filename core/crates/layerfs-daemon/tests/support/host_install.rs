@@ -1,7 +1,7 @@
 //! External authenticated endpoints and complete small-root installation oracle.
 use layerfs_api::{InitRequest, ProjectApi, SealedProject};
 use layerfs_bridge::duplex::{self, Connection};
-use layerfs_daemon::{install_types::InstalledStore, store::BindRequest, Owner, OwnerConfig};
+use layerfs_daemon::{Owner, OwnerConfig, install_types::InstalledStore, store::BindRequest};
 use layerfs_history::{BranchId, HistoryCatalogConfig, HistoryName, LayerStackId, WorkspaceId};
 use layerfs_persistence::{PersistenceConfig, SqlitePersistenceProfile};
 use layerfs_storage::StoragePolicy;
@@ -210,7 +210,13 @@ pub fn oracle(installed: &InstalledStore, overlay: &Path) {
     bound.workspace.close().unwrap();
     drop(bound);
     owner.stop().unwrap();
-    println!("INSTALL_ROOT_ORACLE paths=6 full_regular_bytes={} hardlink=true raw_symlink=true host_sqlite={} daemon_sqlite={} work={:?}",2*FILE_BYTES+14,installed.manifest.host_sqlite,installed.manifest.daemon_sqlite.as_deref().unwrap(),installed.work);
+    println!(
+        "INSTALL_ROOT_ORACLE paths=6 full_regular_bytes={} hardlink=true raw_symlink=true host_sqlite={} daemon_sqlite={} work={:?}",
+        2 * FILE_BYTES + 14,
+        installed.manifest.host_sqlite,
+        installed.manifest.daemon_sqlite.as_deref().unwrap(),
+        installed.work
+    );
 }
 
 /// The newest Commits of `branch` in an installed Store, read in this

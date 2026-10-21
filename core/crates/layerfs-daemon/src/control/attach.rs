@@ -1,19 +1,19 @@
 //! One kernel Attach: engine mount owner, the mount's request owner, then a serving session.
 use super::{
+    Failure, Service, Success,
     kernel::Kernel,
     registry::{bound_mut, idle},
-    serving::{ready, stage, Attached, Kept, KernelServing},
+    serving::{Attached, Kept, KernelServing, ready, stage},
     types::KernelFailure,
-    Failure, Service, Success,
 };
 use crate::store::BoundWorkspace;
 use layerfs_bridge::control::{
-    Activity, ControlCode, Reply, TeardownStage, WorkspaceToken, MOUNT_DIRECTORY_LIMIT,
+    Activity, ControlCode, MOUNT_DIRECTORY_LIMIT, Reply, TeardownStage, WorkspaceToken,
 };
 use layerfs_fuse::{
+    DispatchError,
     attributes::Identity,
     session::{AttachRemainder, KernelSession, SessionConfig},
-    DispatchError,
 };
 use layerfs_overlay::KernelMount;
 use std::sync::Arc;

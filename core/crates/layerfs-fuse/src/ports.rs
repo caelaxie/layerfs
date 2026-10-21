@@ -10,8 +10,8 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -104,7 +104,7 @@ impl Fence {
     pub(crate) fn stop(&self) {
         self.0.stopped.store(true, Ordering::Release);
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn replied(&self) {
         self.0.terminal_replies.fetch_add(1, Ordering::AcqRel);
     }

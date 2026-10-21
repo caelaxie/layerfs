@@ -1,18 +1,17 @@
 //! Borrowed kernel input enters fixed receive accounting before owned copies.
 use super::{
     accounting::Opcode,
-    failure::{failed, KernelInput},
+    failure::{KernelInput, failed},
     mutate::MutationReply,
     reply::ReadReply,
     state::KernelFilesystem,
 };
 use crate::{
-    operations::{
-        create, flush, link, remove, rename, unsupported,
-        write::{self, AttributeChange, Stamp},
-        Declined, MutationInput,
-    },
     RequestDisposition,
+    operations::{
+        Declined, MutationInput, create, flush, link, remove, rename, unsupported,
+        write::{self, AttributeChange, Stamp},
+    },
 };
 use fuser::{
     AccessFlags, BsdFileFlags, CopyFileRangeFlags, Errno, FileHandle, Filesystem, INodeNo,

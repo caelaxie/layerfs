@@ -1,7 +1,7 @@
 //! Declared inline answers and bounded no-reply ownership units.
 use super::{
     accounting::{Disposal, Opcode},
-    failure::{failed, KernelInput},
+    failure::{KernelInput, failed},
     state::KernelFilesystem,
 };
 use crate::RequestDisposition;

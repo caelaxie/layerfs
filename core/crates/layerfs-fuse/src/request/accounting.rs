@@ -1,7 +1,7 @@
 //! Per-mount opcode and disposal counts; one frame can carry several units.
-use crate::phase::{Phases, PHASES};
-use std::sync::atomic::{AtomicU64, Ordering};
+use crate::phase::{PHASES, Phases};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 /// Every kernel operation the pinned adapter can receive on Linux.

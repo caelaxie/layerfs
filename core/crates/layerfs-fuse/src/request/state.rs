@@ -1,12 +1,12 @@
 //! Per-mount callback state; the request worker pool remains daemon-wide.
 use super::accounting::{Accounting, Disposal, Opcode};
-use super::failure::{failed, KernelInput};
+use super::failure::{KernelInput, failed};
 use super::reply::ReadReply;
 use crate::{
+    DispatchError, MountRequests, RequestFuture, RequestOwner,
     attributes::Identity,
     mount::Negotiation,
     ports::{Fence, MountServices},
-    DispatchError, MountRequests, RequestFuture, RequestOwner,
 };
 use fuser::{Errno, INodeNo};
 use layerfs_workspace::KernelReadOperation;

@@ -1,11 +1,11 @@
 //! One attach attempt: direct mount, handshake and all-loop serving evidence.
 use super::state::{
-    AttachFailure, AttachPhase, AttachRemainder, DetachAttempt, KernelSession, SessionConfig,
-    RECEIVE_LOOPS,
+    AttachFailure, AttachPhase, AttachRemainder, DetachAttempt, KernelSession, RECEIVE_LOOPS,
+    SessionConfig,
 };
 use crate::{
-    attributes::Identity, mount::syscalls, ports::MountServices, request::KernelFilesystem,
-    MountRequests,
+    MountRequests, attributes::Identity, mount::syscalls, ports::MountServices,
+    request::KernelFilesystem,
 };
 use fuser::{Config, Session, SessionACL, SessionMonitor, SessionPhase};
 use std::{fs, io, sync::Arc, thread, time::Duration};
@@ -45,16 +45,18 @@ impl KernelSession {
                     io::Error::other(error),
                     false,
                     &queue,
-                ))
+                ));
             }
         };
         if let Err(cause) = syscalls::create_directory(&config.directory) {
             return Err(unmounted(AttachPhase::Directory, cause, false, &queue));
         }
+        #[cfg(target_os = "linux")]
         let device = match syscalls::open_device() {
             Ok(device) => device,
             Err(cause) => return Err(unmounted(AttachPhase::Device, cause, true, &queue)),
         };
+        #[cfg(target_os = "linux")]
         if let Err(errno) = syscalls::attach(
             &device,
             &config.directory,
@@ -63,6 +65,11 @@ impl KernelSession {
         ) {
             return Err(unmounted(AttachPhase::Mount, errno.into(), true, &queue));
         }
+        #[cfg(target_os = "macos")]
+        let mount_path = match syscalls::resolve_mount_path(&config.directory) {
+            Ok(path) => path,
+            Err(cause) => return Err(unmounted(AttachPhase::Directory, cause, true, &queue)),
+        };
         let negotiated = filesystem.negotiation();
         let mut session = Self {
             mount: queue.identity(),
@@ -82,16 +89,47 @@ impl KernelSession {
             detached: Arc::default(),
             drain_wait: config.drain_wait,
             invalidator: None,
+            #[cfg(target_os = "macos")]
+            unmounter: None,
         };
-        let mut options = Config::default();
-        // The command identity differs from the mount owner; kernel permission
-        // checks, not a library uid filter, decide access.
-        options.acl = SessionACL::All;
-        options.n_threads = Some(RECEIVE_LOOPS);
-        // The session takes the only descriptor: losing it aborts the connection.
-        let kernel = match Session::from_fd(filesystem, device, SessionACL::All, options) {
-            Ok(kernel) => kernel,
-            Err(cause) => return Err(session.abandon(AttachPhase::Handshake, cause)),
+        #[cfg(target_os = "linux")]
+        let kernel = {
+            let mut options = Config::default();
+            // The command identity differs from the mount owner; kernel permission
+            // checks, not a library uid filter, decide access.
+            options.acl = SessionACL::All;
+            options.n_threads = Some(RECEIVE_LOOPS);
+            // The session takes the only descriptor: losing it aborts the connection.
+            match Session::from_fd(filesystem, device, SessionACL::All, options) {
+                Ok(kernel) => kernel,
+                Err(cause) => return Err(session.abandon(AttachPhase::Handshake, cause)),
+            }
+        };
+        #[cfg(target_os = "macos")]
+        let kernel = {
+            let mut options = Config::default();
+            options.acl = SessionACL::Owner;
+            options.n_threads = Some(RECEIVE_LOOPS);
+            options.mount_options = vec![
+                fuser::MountOption::FSName("layerfs".into()),
+                fuser::MountOption::Subtype("layerfs".into()),
+                fuser::MountOption::DefaultPermissions,
+                fuser::MountOption::NoAtime,
+                fuser::MountOption::CUSTOM("noappledouble".into()),
+                fuser::MountOption::CUSTOM("noapplexattr".into()),
+                fuser::MountOption::CUSTOM("nobrowse".into()),
+            ];
+            let mut kernel = match Session::new(filesystem, &mount_path, &options) {
+                Ok(kernel) => kernel,
+                Err(cause) => {
+                    if syscalls::mount_entry(&session.directory).is_ok() {
+                        return Err(session.abandon(AttachPhase::Handshake, cause));
+                    }
+                    return Err(unmounted(AttachPhase::Mount, cause, true, &session.queue));
+                }
+            };
+            session.unmounter = Some(kernel.unmount_callable());
+            kernel
         };
         session.negotiation = negotiated.get().copied();
         session.invalidator = Some(super::Invalidator::new(kernel.notifier(), identity));
@@ -128,7 +166,13 @@ impl KernelSession {
             let cause = io::Error::other("completed handshake recorded no negotiation");
             return Err(session.abandon(AttachPhase::Receipt, cause));
         }
+        #[cfg(target_os = "linux")]
         let entry = match syscalls::mount_entry(&session.directory) {
+            Ok(entry) => entry,
+            Err(cause) => return Err(session.abandon(AttachPhase::Receipt, cause)),
+        };
+        #[cfg(target_os = "macos")]
+        let entry = match wait_macos_mount_entry(&session.directory, &monitor, config.ready_wait) {
             Ok(entry) => entry,
             Err(cause) => return Err(session.abandon(AttachPhase::Receipt, cause)),
         };
@@ -177,4 +221,25 @@ fn fence_first_exit(monitor: SessionMonitor, queue: MountRequests) {
     }
     // A request owner already released by a completed drain has no waiter to wake.
     let _ = queue.stop_receive();
+}
+#[cfg(target_os = "macos")]
+fn wait_macos_mount_entry(
+    target: &std::path::Path,
+    monitor: &SessionMonitor,
+    ready_wait: Duration,
+) -> io::Result<crate::mount::MountEntry> {
+    let deadline = std::time::Instant::now() + ready_wait;
+    loop {
+        match syscalls::mount_entry(target) {
+            Ok(entry) => return Ok(entry),
+            Err(cause) => {
+                if monitor.snapshot().phase != SessionPhase::Serving
+                    || std::time::Instant::now() >= deadline
+                {
+                    return Err(cause);
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
 }

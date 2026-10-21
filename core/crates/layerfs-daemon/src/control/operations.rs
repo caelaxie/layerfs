@@ -1,8 +1,8 @@
 //! Explicit control operations with short local admission and original receipts.
 use super::{
-    registry::{bound_mut, Binding, Entry},
-    types::KernelFailure,
     Failure, Service, Success,
+    registry::{Binding, Entry, bound_mut},
+    types::KernelFailure,
 };
 use crate::store::{
     BindPhase, BindRequest, BoundWorkspace, CapturedConstruction, CommitError, CommitFailure,
@@ -116,9 +116,12 @@ impl Service {
             }),
             Request::Locate(workspace) => self.locate(*workspace),
             // History calls are Store calls: they run in the SDK's process.
-            Request::Fork(_) | Request::Branches { .. } | Request::History(_) => Err(
-                Failure::Rejected(ControlCode::Invalid, "Store calls are not served by the daemon"),
-            ),
+            Request::Fork(_) | Request::Branches { .. } | Request::History(_) => {
+                Err(Failure::Rejected(
+                    ControlCode::Invalid,
+                    "Store calls are not served by the daemon",
+                ))
+            }
         }
     }
     pub(crate) fn mount(
@@ -316,8 +319,11 @@ impl Service {
     pub(super) fn job<T>(
         &self,
         route: layerfs_workspace::Route,
-        command: impl FnOnce(&crate::OwnerClient, layerfs_workspace::Route) -> Result<T, crate::OwnerError>
-            + Send,
+        command: impl FnOnce(
+            &crate::OwnerClient,
+            layerfs_workspace::Route,
+        ) -> Result<T, crate::OwnerError>
+        + Send,
     ) -> Result<T, Failure> {
         command(&self.owner, route).map_err(Failure::Owner)
     }

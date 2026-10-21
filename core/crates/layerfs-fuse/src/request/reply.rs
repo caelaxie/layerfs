@@ -1,10 +1,10 @@
 //! Pinned fuser consumes replies once; send/delivery outcomes are unavailable.
 use super::{accounting::Accounting, terminal};
 use crate::{
-    attributes::{refusal, Identity},
+    RequestDisposition,
+    attributes::{Identity, refusal},
     operations::{KernelData, KernelRead, ReadDataInput},
     ports::{Fence, RequestServices},
-    RequestDisposition,
 };
 use fuser::{
     Errno, FileAttr, FileHandle, FileType, FopenFlags, Generation, INodeNo, ReplyAttr, ReplyData,
@@ -68,7 +68,7 @@ impl ReadReply {
                         services, fence, mount, request, protected, handle, operation, identity,
                         accounting,
                     )
-                    .await
+                    .await;
             }
         };
         // Nothing is held in the engine after the visit: the reply ends it.

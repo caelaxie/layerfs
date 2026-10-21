@@ -1,11 +1,11 @@
 //! Preserve original failure knowledge while sending a bounded control summary.
 use super::Failure;
 use crate::{
-    store::{owner_uncertain, BindError, CommitError, PortError},
     OwnerError,
+    store::{BindError, CommitError, PortError, owner_uncertain},
 };
 use layerfs_bridge::control::{ControlCode, ControlRefusal};
-use layerfs_history::{error::MovedState, HistoryError};
+use layerfs_history::{HistoryError, error::MovedState};
 use layerfs_overlay::OverlayError;
 use layerfs_storage::StorageError;
 impl Failure {

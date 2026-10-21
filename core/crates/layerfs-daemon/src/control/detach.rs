@@ -1,9 +1,9 @@
 //! Linux half of normal unmount: plain detach once, then the drain barrier.
 use super::{
+    Failure, Service, Success,
     kernel::Kernel,
     registry::bound_mut,
-    serving::{stage, Attached, Kept, Leaving},
-    Failure, Service, Success,
+    serving::{Attached, Kept, Leaving, stage},
 };
 use crate::store::BoundWorkspace;
 use layerfs_bridge::control::{
@@ -27,7 +27,7 @@ pub(super) fn take(kernel: &mut Kernel, phase: MountPhase) -> Result<Box<Attache
                 ControlCode::Busy,
                 "unmount:admission",
                 "terminal unmount already admitted",
-            ))
+            ));
         }
         Kernel::Unattached | Kernel::Attaching | Kernel::Retained(_) => {
             unreachable!("handled by terminal admission")
@@ -78,7 +78,7 @@ impl Service {
                     Some(observer),
                     Box::new(session),
                     None,
-                ))
+                ));
             }
         }
         self.leaving(token, MountPhase::Draining);
@@ -95,7 +95,7 @@ impl Service {
                     Some(observer),
                     undrained,
                     None,
-                ))
+                ));
             }
         };
         // Drain barrier holds: one fixed logical mark, then indexed retirement.

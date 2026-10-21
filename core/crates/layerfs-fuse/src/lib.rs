@@ -7,16 +7,16 @@ pub mod operations;
 pub mod phase;
 pub mod ports;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod attributes;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod mount;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod request;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod session;
 
 pub use dispatch::{
-    DispatchError, FailureView, InputFailure, MountRequests, MountWork, Received,
-    RequestDisposition, RequestFuture, RequestOwner, MAX_INPUT_BYTES, RECEIVE_SLOTS,
+    DispatchError, FailureView, InputFailure, MAX_INPUT_BYTES, MountRequests, MountWork,
+    RECEIVE_SLOTS, Received, RequestDisposition, RequestFuture, RequestOwner,
 };

@@ -1,8 +1,8 @@
 //! READ and READLINK: one owner visit, at most one base read, then the reply.
-use super::lookup::Custody;
 use super::ReadFailure;
+use super::lookup::Custody;
 use crate::ports::{RequestServices, ServiceError, ServiceReply};
-use layerfs_overlay::{KernelMount, OverlayError, CELL_BYTES, READ_WINDOW};
+use layerfs_overlay::{CELL_BYTES, KernelMount, OverlayError, READ_WINDOW};
 use layerfs_workspace::{KernelReadOperation, KernelWindow, Refusal};
 use std::sync::Arc;
 

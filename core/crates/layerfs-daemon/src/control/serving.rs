@@ -1,12 +1,12 @@
 //! One shared dispatcher for every mount, and the exact owners an entry keeps.
-use super::kernel::{bounded, KernelConfig};
+use super::kernel::{KernelConfig, bounded};
 use layerfs_bridge::control::{
     ForcedFacts, MountPhase, MountReceipt, MountWork, ReadyMount, TeardownCustody, TeardownStage,
     WorkspaceToken,
 };
 use layerfs_fuse::{
-    session::{DrainStage, KernelSession, SessionFacts, SessionObserver},
     DispatchError, MountRequests,
+    session::{DrainStage, KernelSession, SessionFacts, SessionObserver},
 };
 use layerfs_overlay::KernelMount;
 use std::{fmt, path::PathBuf};

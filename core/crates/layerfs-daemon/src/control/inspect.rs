@@ -1,6 +1,6 @@
 //! The operator read model's Workspace half: this daemon's bound Workspaces,
 //! copied from the registry, with one engine observation each.
-use super::{registry::Entry, Service};
+use super::{Service, registry::Entry};
 use crate::operator::{self, WorkspaceView};
 use layerfs_bridge::control::{Activity, MountPhase, Reply, SdkCall, SdkRefusal, SdkValue};
 
@@ -36,7 +36,7 @@ impl Service {
                     code: "Failed".to_owned(),
                     message: "control registry poisoned".to_owned(),
                     detail: SdkValue::Null,
-                })
+                });
             }
         };
         let views = copies

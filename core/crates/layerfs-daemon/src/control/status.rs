@@ -1,7 +1,7 @@
 //! Coherent control metadata and a separately scoped indexed engine observation.
 use super::{
-    registry::{bound, Entry},
     Failure, Service, Success,
+    registry::{Entry, bound},
 };
 use layerfs_bridge::control::{
     ControlCode, LocalObservation, Reply, WorkspaceStatus, WorkspaceToken,
@@ -22,7 +22,7 @@ impl Service {
                     return Err(Failure::Rejected(
                         ControlCode::Busy,
                         "Workspace binding retained",
-                    ))
+                    ));
                 }
                 None => return Err(Failure::Rejected(ControlCode::Missing, "Workspace absent")),
             }

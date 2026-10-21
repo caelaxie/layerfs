@@ -8,8 +8,8 @@
 //! kernel discards an attribute reply sampled before a newer inode version;
 //! that discard, not reply order on the wire, is what the daemon relies on.
 use crate::{
-    operations::{KernelMutation, MutationFailure},
     RequestDisposition,
+    operations::{KernelMutation, MutationFailure},
 };
 
 /// Called once the reply method returned. The pinned library reports no send

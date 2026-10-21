@@ -1,14 +1,15 @@
 //! Deferred kernel enumeration and exact descriptor release.
 use super::{
+    KernelFilesystem,
     accounting::Opcode,
-    failure::{failed, KernelInput},
-    terminal, KernelFilesystem,
+    failure::{KernelInput, failed},
+    terminal,
 };
 use crate::{
+    RequestDisposition,
     attributes::Identity,
     operations::{DirectoryStep, DirectoryStream},
     ports::{Fence, ServiceError},
-    RequestDisposition,
 };
 use fuser::{Errno, FileHandle, FileType, INodeNo, ReplyDirectory, ReplyEmpty, Request};
 use layerfs_content::object::inode_leaf::InodeKind;

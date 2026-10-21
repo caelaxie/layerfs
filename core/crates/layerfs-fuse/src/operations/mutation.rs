@@ -266,7 +266,7 @@ impl Custody {
                         stat: inode.clone().map(Into::into),
                         file: None,
                         changed: false,
-                    }))
+                    }));
                 }
                 Ok(JobOutcome::Refused(refusal)) => return Ok(Err(Declined::Refused(*refusal))),
                 Ok(JobOutcome::Needs(needs)) if !needs.is_empty() => needs,
@@ -282,7 +282,7 @@ impl Custody {
                             .provider_failure()
                             .is_ok_and(|failure| failure.is_none()) =>
                 {
-                    return Ok(Err(Declined::NoSpace))
+                    return Ok(Err(Declined::NoSpace));
                 }
                 _ => return Err(Box::new(Attempted(original))),
             };

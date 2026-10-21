@@ -1,6 +1,6 @@
 //! Telemetry names every kernel opcode once, at its own index.
-#![cfg(target_os = "linux")]
-use layerfs_fuse::request::{Opcode, OPCODES};
+#![cfg(any(target_os = "linux", target_os = "macos"))]
+use layerfs_fuse::request::{OPCODES, Opcode};
 use std::collections::BTreeSet;
 
 #[test]

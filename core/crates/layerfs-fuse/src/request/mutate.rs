@@ -1,19 +1,19 @@
 //! Mutating callbacks: owned bounded input, one decided plan, one reply attempt.
 use super::{
     accounting::Opcode,
-    failure::{failed, KernelInput},
-    reply::{open_flags, TTL},
+    failure::{KernelInput, failed},
+    reply::{TTL, open_flags},
     state::KernelFilesystem,
     terminal,
 };
 use crate::{
-    attributes::{declined, Identity},
+    RequestDisposition, RequestOwner,
+    attributes::{Identity, declined},
     coherence::{attributes::published, pages, reply_order},
     operations::{
-        write::time, Declined, KernelMutation, MutationInput, MutationRequest, Published,
+        Declined, KernelMutation, MutationInput, MutationRequest, Published, write::time,
     },
     ports::{Fence, RequestServices, ServiceError},
-    RequestDisposition, RequestOwner,
 };
 use fuser::{
     Errno, FileAttr, FileHandle, Generation, INodeNo, ReplyAttr, ReplyCreate, ReplyEmpty,
